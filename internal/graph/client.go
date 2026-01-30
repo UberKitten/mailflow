@@ -340,7 +340,7 @@ type dateRange struct {
 func (c *Client) StreamMessages(ctx context.Context, folderID string, opts ListOptions, fn func(msg Message) error) error {
 	params := url.Values{}
 	params.Set("$top", "250")
-	params.Set("$orderby", "receivedDateTime")
+	params.Set("$orderby", "receivedDateTime desc")
 	params.Set("$select", buildSelect(opts))
 
 	var filtersNoDate []string
