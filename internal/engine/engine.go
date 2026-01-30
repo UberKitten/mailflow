@@ -416,19 +416,24 @@ type ResortOptions struct {
 	Before         time.Time
 	Fast           bool
 	CheckpointPath string
+	ConfigDir      string
+	Resume         bool
 }
 
 // ResortCheckpoint stores resume state for resort.
 type ResortCheckpoint struct {
-	Folder    string    `json:"folder"`
-	Recursive bool      `json:"recursive"`
-	LastTime  time.Time `json:"lastTime"`
-	Processed int       `json:"processed"`
-	StartedAt time.Time `json:"startedAt"`
+	Folder      string               `json:"folder"`
+	Recursive   bool                 `json:"recursive"`
+	Processed   int                  `json:"processed"`
+	StartedAt   time.Time            `json:"startedAt"`
+	FolderTimes map[string]time.Time `json:"folderTimes"`
 }
 
 // DefaultResortCheckpointPath returns the default checkpoint path.
-func DefaultResortCheckpointPath() string {
+func DefaultResortCheckpointPath(configDir string) string {
+	if configDir != "" {
+		return filepath.Join(configDir, "resort-checkpoint.json")
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "resort-checkpoint.json"
@@ -467,7 +472,7 @@ func writeResortCheckpoint(path string, checkpoint ResortCheckpoint) error {
 	if path == "" {
 		return nil
 	}
-	if checkpoint.LastTime.IsZero() {
+	if len(checkpoint.FolderTimes) == 0 {
 		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -510,7 +515,7 @@ func (e *Engine) Resort(ctx context.Context, folder string, opts ResortOptions) 
 	start := time.Now()
 	checkpointPath := opts.CheckpointPath
 	if checkpointPath == "" {
-		checkpointPath = DefaultResortCheckpointPath()
+		checkpointPath = DefaultResortCheckpointPath(opts.ConfigDir)
 	}
 	checkpointPath = expandCheckpointPath(checkpointPath)
 
@@ -553,16 +558,28 @@ func (e *Engine) Resort(ctx context.Context, folder string, opts ResortOptions) 
 
 	report := &ResortReport{StartedAt: start}
 	var reportMu sync.Mutex
-	var lastTime time.Time
+	folderTimes := make(map[string]time.Time)
+
+	var resumeTimes map[string]time.Time
+	if opts.Resume {
+		checkpoint, err := LoadResortCheckpoint(checkpointPath)
+		if err != nil {
+			return nil, fmt.Errorf("load checkpoint: %w", err)
+		}
+		resumeTimes = checkpoint.FolderTimes
+	}
 
 	writeCheckpoint := func() {
 		reportMu.Lock()
 		checkpoint := ResortCheckpoint{
-			Folder:    folder,
-			Recursive: opts.Recursive,
-			LastTime:  lastTime,
-			Processed: report.Total,
-			StartedAt: start,
+			Folder:      folder,
+			Recursive:   opts.Recursive,
+			Processed:   report.Total,
+			StartedAt:   start,
+			FolderTimes: make(map[string]time.Time, len(folderTimes)),
+		}
+		for key, value := range folderTimes {
+			checkpoint.FolderTimes[key] = value
 		}
 		reportMu.Unlock()
 		if err := writeResortCheckpoint(checkpointPath, checkpoint); err != nil {
@@ -593,12 +610,28 @@ func (e *Engine) Resort(ctx context.Context, folder string, opts ResortOptions) 
 	sem := make(chan struct{}, workerLimit)
 	for _, f := range folderIDs {
 		f := f
+		before := opts.Before
+		if opts.Resume {
+			resumeTime, ok := resumeTimes[f.Path]
+			if !ok {
+				slog.Info("skipping completed folder", "folder", f.Path)
+				continue
+			}
+			before = resumeTime
+		}
+
 		g.Go(func() error {
+			reportMu.Lock()
+			if _, ok := folderTimes[f.Path]; !ok {
+				folderTimes[f.Path] = time.Time{}
+			}
+			reportMu.Unlock()
+
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
 			slog.Info("starting stream", "folder", f.Path, "fast", opts.Fast)
-			listOpts := graph.ListOptions{Since: opts.Since, Before: opts.Before, Fast: opts.Fast}
+			listOpts := graph.ListOptions{Since: opts.Since, Before: before, Fast: opts.Fast}
 			if opts.Fast {
 				listOpts.Fields = []string{"id", "from", "subject", "toRecipients"}
 			}
@@ -606,8 +639,9 @@ func (e *Engine) Resort(ctx context.Context, folder string, opts ResortOptions) 
 				reportMu.Lock()
 				report.Total++
 				if !msg.Received.IsZero() {
+					lastTime := folderTimes[f.Path]
 					if lastTime.IsZero() || msg.Received.Before(lastTime) {
-						lastTime = msg.Received
+						folderTimes[f.Path] = msg.Received
 					}
 				}
 				total := report.Total
@@ -659,6 +693,9 @@ func (e *Engine) Resort(ctx context.Context, folder string, opts ResortOptions) 
 			if err != nil {
 				return err
 			}
+			reportMu.Lock()
+			delete(folderTimes, f.Path)
+			reportMu.Unlock()
 			return nil
 		})
 	}

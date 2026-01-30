@@ -40,7 +40,7 @@ func runResort(cmd *cobra.Command, args []string) error {
 	fast, _ := cmd.Flags().GetBool("fast")
 	resume, _ := cmd.Flags().GetBool("resume")
 	checkpointPath, _ := cmd.Flags().GetString("checkpoint-path")
-	var before time.Time
+	cfgDir, _ := cmd.Root().Flags().GetString("config-dir")
 
 	if !dryRun && !apply {
 		return errors.New("must specify --dry-run or --apply")
@@ -54,7 +54,7 @@ func runResort(cmd *cobra.Command, args []string) error {
 			return errors.New("cannot specify folder when using --resume")
 		}
 		if checkpointPath == "" {
-			checkpointPath = engine.DefaultResortCheckpointPath()
+			checkpointPath = engine.DefaultResortCheckpointPath(cfgDir)
 		}
 		checkpoint, err := engine.LoadResortCheckpoint(checkpointPath)
 		if err != nil {
@@ -62,7 +62,6 @@ func runResort(cmd *cobra.Command, args []string) error {
 		}
 		folder = checkpoint.Folder
 		recursive = checkpoint.Recursive
-		before = checkpoint.LastTime
 	} else {
 		if len(args) == 0 {
 			return errors.New("must specify folder or use --resume")
@@ -70,7 +69,6 @@ func runResort(cmd *cobra.Command, args []string) error {
 		folder = args[0]
 	}
 
-	cfgDir, _ := cmd.Root().Flags().GetString("config-dir")
 	cfg, rules, err := config.Load(cfgDir)
 	if err != nil {
 		return err
@@ -84,7 +82,15 @@ func runResort(cmd *cobra.Command, args []string) error {
 	env := engine.New(cfg, rules, client)
 	ctx := context.Background()
 
-	report, err := env.Resort(ctx, folder, engine.ResortOptions{DryRun: dryRun, Recursive: recursive, Since: since, Before: before, Fast: fast, CheckpointPath: checkpointPath})
+	report, err := env.Resort(ctx, folder, engine.ResortOptions{
+		DryRun:         dryRun,
+		Recursive:      recursive,
+		Since:          since,
+		Fast:           fast,
+		CheckpointPath: checkpointPath,
+		ConfigDir:      cfgDir,
+		Resume:         resume,
+	})
 	if err != nil {
 		return err
 	}
