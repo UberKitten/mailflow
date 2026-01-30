@@ -21,10 +21,12 @@ type Config struct {
 }
 
 type WebhookConfig struct {
-	Enabled     bool   `yaml:"enabled"`
-	Port        int    `yaml:"port"`
-	Path        string `yaml:"path"`
-	ExternalURL string `yaml:"external_url"`
+	Enabled              bool   `yaml:"enabled"`
+	Port                 int    `yaml:"port"`
+	Path                 string `yaml:"path"`
+	ExternalURL          string `yaml:"external_url"`
+	PollIntervalSeconds  int    `yaml:"poll_interval_seconds"`
+	RetryIntervalSeconds int    `yaml:"retry_interval_seconds"`
 }
 
 type GraphConfig struct {
@@ -157,6 +159,12 @@ func loadMainConfig(configDir string) (*Config, error) {
 	}
 	if cfg.Process.ResortWorkers == 0 {
 		cfg.Process.ResortWorkers = 6
+	}
+	if cfg.Webhook.PollIntervalSeconds == 0 {
+		cfg.Webhook.PollIntervalSeconds = 60
+	}
+	if cfg.Webhook.RetryIntervalSeconds == 0 {
+		cfg.Webhook.RetryIntervalSeconds = 300
 	}
 
 	return &cfg, nil

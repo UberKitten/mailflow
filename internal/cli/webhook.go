@@ -2,11 +2,13 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -101,6 +103,55 @@ func runWebhook(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	pollInterval := time.Duration(cfg.Webhook.PollIntervalSeconds) * time.Second
+	retryInterval := time.Duration(cfg.Webhook.RetryIntervalSeconds) * time.Second
+
+	var pollMu sync.Mutex
+	polling := false
+	var pollCancel context.CancelFunc
+
+	startPolling := func() {
+		pollMu.Lock()
+		defer pollMu.Unlock()
+		if polling {
+			return
+		}
+		polling = true
+		pollCtx, cancelPoll := context.WithCancel(ctx)
+		pollCancel = cancelPoll
+		slog.Warn("starting polling fallback", "interval", pollInterval)
+		go func() {
+			ticker := time.NewTicker(pollInterval)
+			defer ticker.Stop()
+			for {
+				if err := eng.ProcessOnce(pollCtx, 0); err != nil {
+					if errors.Is(err, context.Canceled) {
+						return
+					}
+					slog.Error("polling cycle failed", "error", err)
+				}
+				select {
+				case <-pollCtx.Done():
+					return
+				case <-ticker.C:
+				}
+			}
+		}()
+	}
+
+	stopPolling := func() {
+		pollMu.Lock()
+		defer pollMu.Unlock()
+		if !polling {
+			return
+		}
+		polling = false
+		if pollCancel != nil {
+			pollCancel()
+		}
+		slog.Info("polling fallback stopped")
+	}
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM)
 
@@ -112,7 +163,7 @@ func runWebhook(cmd *cobra.Command, args []string) error {
 
 	// Give server time to start listening
 	time.Sleep(2 * time.Second)
-	
+
 	// Verify server is responding before creating subscription
 	healthURL := fmt.Sprintf("http://localhost:%d/health", cfg.Webhook.Port)
 	for i := 0; i < 5; i++ {
@@ -135,7 +186,27 @@ func runWebhook(cmd *cobra.Command, args []string) error {
 	slog.Info("creating Graph subscription", "url", cfg.Webhook.ExternalURL)
 	if err := subMgr.CreateOrRenew(ctx); err != nil {
 		slog.Error("failed to create subscription", "error", err)
-		// Continue anyway - server will still work for manual testing
+		startPolling()
+
+		go func() {
+			ticker := time.NewTicker(retryInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					slog.Info("retrying Graph subscription", "interval", retryInterval)
+					if err := subMgr.CreateOrRenew(ctx); err != nil {
+						slog.Warn("subscription retry failed", "error", err)
+						continue
+					}
+					slog.Info("Graph subscription active, disabling polling fallback")
+					stopPolling()
+					return
+				}
+			}
+		}()
 	}
 
 	// Wait for shutdown signal or error
