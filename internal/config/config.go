@@ -17,6 +17,14 @@ type Config struct {
 	Graph    GraphConfig   `yaml:"graph"`
 	Pushover Pushover      `yaml:"pushover"`
 	Process  ProcessConfig `yaml:"process"`
+	Webhook  WebhookConfig `yaml:"webhook"`
+}
+
+type WebhookConfig struct {
+	Enabled     bool   `yaml:"enabled"`
+	Port        int    `yaml:"port"`
+	Path        string `yaml:"path"`
+	ExternalURL string `yaml:"external_url"`
 }
 
 type GraphConfig struct {

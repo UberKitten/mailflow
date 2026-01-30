@@ -26,4 +26,4 @@ COPY --from=builder /app/mailflow /app/mailflow
 VOLUME /config
 
 ENTRYPOINT ["/app/mailflow", "--config-dir=/config"]
-CMD ["process", "--watch"]
+CMD ["webhook"]

@@ -82,6 +82,65 @@ func (e *Engine) ProcessOnce(ctx context.Context, since time.Duration) error {
 	return nil
 }
 
+// ProcessSingle processes a single message by ID (used by webhook)
+func (e *Engine) ProcessSingle(ctx context.Context, messageID string) error {
+	// Check if message is in Inbox
+	folderID, err := e.client.GetMessageFolder(ctx, messageID)
+	if err != nil {
+		return fmt.Errorf("get message folder: %w", err)
+	}
+
+	inboxID, err := e.client.FindFolderIDByPath(ctx, "Inbox")
+	if err != nil {
+		return fmt.Errorf("find inbox: %w", err)
+	}
+
+	// Only process if in Inbox
+	if folderID != inboxID {
+		slog.Debug("message not in inbox, skipping", "messageId", messageID, "folder", folderID)
+		return nil
+	}
+
+	// Get full message
+	msg, err := e.client.GetMessage(ctx, messageID)
+	if err != nil {
+		return fmt.Errorf("get message: %w", err)
+	}
+
+	// Match against rules
+	rule := Match(e.rules, *msg, MatchOptions{})
+	if rule == nil {
+		slog.Debug("no rule matched", "messageId", messageID, "from", msg.From, "subject", msg.Subject)
+		return nil
+	}
+
+	// Move to destination folder
+	destID, err := e.client.FindFolderIDByPath(ctx, rule.Folder)
+	if err != nil {
+		return fmt.Errorf("find dest folder: %w", err)
+	}
+
+	if err := e.client.MoveMessage(ctx, messageID, destID); err != nil {
+		return fmt.Errorf("move message: %w", err)
+	}
+
+	slog.Info("moved", "id", messageID, "from", msg.From, "subject", msg.Subject, "rule", rule.Name, "folder", rule.Folder)
+
+	// Execute on_match actions
+	if rule.OnMatch != nil {
+		if rule.OnMatch.MarkRead {
+			if err := e.client.MarkRead(ctx, messageID); err != nil {
+				slog.Warn("mark read failed", "id", messageID, "error", err)
+			}
+		}
+		if rule.OnMatch.Pushover != nil {
+			e.sendPushover(*msg, rule)
+		}
+	}
+
+	return nil
+}
+
 func (e *Engine) sendPushover(msg graph.Message, rule *config.Rule) {
 	if e.cfg.Pushover.Token == "" || e.cfg.Pushover.User == "" {
 		slog.Warn("pushover config missing")

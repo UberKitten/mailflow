@@ -104,6 +104,11 @@ func (c *Client) token() (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+// GetToken returns a valid access token (public wrapper for subscription manager)
+func (c *Client) GetToken() (string, error) {
+	return c.token()
+}
+
 func (c *Client) do(ctx context.Context, method, url string, body io.Reader) (*http.Response, error) {
 	if c.sema != nil {
 		select {
@@ -641,6 +646,60 @@ func (c *Client) MoveMessage(ctx context.Context, msgID, destFolderID string) er
 		return fmt.Errorf("move failed: %s", resp.Status)
 	}
 	return nil
+}
+
+// GetMessage fetches a single message by ID
+func (c *Client) GetMessage(ctx context.Context, msgID string) (*Message, error) {
+	params := url.Values{}
+	params.Set("$select", "id,subject,from,toRecipients,body,bodyPreview,isRead,receivedDateTime,parentFolderId")
+	endpoint := fmt.Sprintf("%s/me/messages/%s?%s", c.baseURL, msgID, params.Encode())
+	
+	resp, err := c.doWithRetry(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("message not found: %s", msgID)
+	}
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("get message failed: %s - %s", resp.Status, string(body))
+	}
+	
+	var gm graphMessage
+	if err := json.NewDecoder(resp.Body).Decode(&gm); err != nil {
+		return nil, fmt.Errorf("decode message: %w", err)
+	}
+	
+	msg := toMessage(gm)
+	return &msg, nil
+}
+
+// GetMessageFolder returns the folder ID containing the message
+func (c *Client) GetMessageFolder(ctx context.Context, msgID string) (string, error) {
+	params := url.Values{}
+	params.Set("$select", "parentFolderId")
+	endpoint := fmt.Sprintf("%s/me/messages/%s?%s", c.baseURL, msgID, params.Encode())
+	
+	resp, err := c.doWithRetry(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	
+	if resp.StatusCode >= 300 {
+		return "", fmt.Errorf("get message folder failed: %s", resp.Status)
+	}
+	
+	var result struct {
+		ParentFolderID string `json:"parentFolderId"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+	return result.ParentFolderID, nil
 }
 
 func (c *Client) MarkRead(ctx context.Context, msgID string) error {
