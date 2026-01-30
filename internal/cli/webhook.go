@@ -250,9 +250,12 @@ func runWebhook(cmd *cobra.Command, args []string) error {
 				slog.Info("config reloaded")
 			case syscall.SIGINT, syscall.SIGTERM:
 				slog.Info("received signal, shutting down", "signal", sig)
-				cancel()
-				shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*1e9)
+				shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer shutdownCancel()
+				if err := subMgr.Delete(shutdownCtx); err != nil {
+					slog.Warn("failed to delete subscription", "error", err)
+				}
+				cancel()
 				return server.Stop(shutdownCtx)
 			}
 		case err := <-errCh:

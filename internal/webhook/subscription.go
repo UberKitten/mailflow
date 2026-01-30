@@ -202,6 +202,15 @@ func (m *SubscriptionManager) delete(ctx context.Context, id string) error {
 	return nil
 }
 
+// Delete removes the current subscription (call on shutdown)
+func (m *SubscriptionManager) Delete(ctx context.Context) error {
+	if m.subscriptionID == "" {
+		return nil
+	}
+	slog.Info("deleting subscription", "id", m.subscriptionID)
+	return m.delete(ctx, m.subscriptionID)
+}
+
 // StartRenewalLoop runs in background to keep subscription alive
 func (m *SubscriptionManager) StartRenewalLoop(ctx context.Context) {
 	ticker := time.NewTicker(12 * time.Hour) // Renew every 12 hours
