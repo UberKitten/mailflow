@@ -24,20 +24,26 @@ type Subscription struct {
 
 // SubscriptionManager handles Graph subscription lifecycle
 type SubscriptionManager struct {
-	baseURL       string
-	tokenFunc     func() (string, error)
-	notifyURL     string
-	clientState   string
+	baseURL        string
+	tokenFunc      func() (string, error)
+	notifyURL      string
+	clientState    string
+	resource       string
 	subscriptionID string
 }
 
 // NewSubscriptionManager creates a new manager
-func NewSubscriptionManager(baseURL string, tokenFunc func() (string, error), notifyURL, clientState string) *SubscriptionManager {
+// resource is the Graph API resource to watch, e.g. "me/mailFolders('Inbox')/messages"
+func NewSubscriptionManager(baseURL string, tokenFunc func() (string, error), notifyURL, clientState, resource string) *SubscriptionManager {
+	if resource == "" {
+		resource = "me/mailFolders('Inbox')/messages"
+	}
 	return &SubscriptionManager{
 		baseURL:     baseURL,
 		tokenFunc:   tokenFunc,
 		notifyURL:   notifyURL,
 		clientState: clientState,
+		resource:    resource,
 	}
 }
 
@@ -81,7 +87,7 @@ func (m *SubscriptionManager) create(ctx context.Context) error {
 	sub := Subscription{
 		ChangeType:         "created",
 		NotificationURL:    m.notifyURL,
-		Resource:           "me/mailFolders('Inbox')/messages",
+		Resource:           m.resource,
 		ExpirationDateTime: expiry,
 		ClientState:        m.clientState,
 	}

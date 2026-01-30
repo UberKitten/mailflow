@@ -86,12 +86,32 @@ func runWebhook(cmd *cobra.Command, args []string) error {
 
 	server := webhook.New(whCfg, handler)
 
+	// Resolve watch folder to Graph resource
+	watchFolder := cfg.Webhook.WatchFolder
+	if watchFolder == "" {
+		watchFolder = "Inbox"
+	}
+	
+	var resource string
+	if watchFolder == "Inbox" {
+		resource = "me/mailFolders('Inbox')/messages"
+	} else {
+		// Resolve folder path to ID
+		folderID, err := client.FindFolderIDByPath(context.Background(), watchFolder)
+		if err != nil {
+			return fmt.Errorf("failed to resolve watch folder %q: %w", watchFolder, err)
+		}
+		resource = fmt.Sprintf("me/mailFolders('%s')/messages", folderID)
+		slog.Info("watching folder", "path", watchFolder, "id", folderID)
+	}
+
 	// Create subscription manager
 	subMgr := webhook.NewSubscriptionManager(
 		cfg.Graph.BaseURL,
 		client.GetToken,
 		cfg.Webhook.ExternalURL,
 		server.ClientState(),
+		resource,
 	)
 
 	// Write PID file

@@ -26,6 +26,7 @@ type WebhookConfig struct {
 	Path                 string `yaml:"path"`
 	ExternalURL          string `yaml:"external_url"`
 	StateFile            string `yaml:"state_file"`
+	WatchFolder          string `yaml:"watch_folder"` // folder path to watch, default "Inbox"
 	PollIntervalSeconds  int    `yaml:"poll_interval_seconds"`
 	RetryIntervalSeconds int    `yaml:"retry_interval_seconds"`
 }
