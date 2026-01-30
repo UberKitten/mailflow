@@ -492,7 +492,17 @@ func (e *Engine) Resort(ctx context.Context, folder string, opts ResortOptions) 
 				reportMu.Unlock()
 				
 				if total%500 == 0 {
-					slog.Info("resort progress", "processed", total, "moved", moved)
+					elapsed := time.Since(start)
+					emailsPerSec := float64(total) / elapsed.Seconds()
+					requests, retries, _, reqPerMin := e.client.Metrics()
+					slog.Info("resort progress",
+						"processed", total,
+						"moved", moved,
+						"emails/sec", fmt.Sprintf("%.1f", emailsPerSec),
+						"requests", requests,
+						"retries", retries,
+						"req/min", fmt.Sprintf("%.1f", reqPerMin),
+						"elapsed", elapsed.Round(time.Second))
 				}
 
 				rule := Match(e.rules, msg, MatchOptions{Fast: opts.Fast})

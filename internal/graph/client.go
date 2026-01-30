@@ -39,6 +39,12 @@ type Client struct {
 	rangeDays            int
 	rng                  *rand.Rand
 	rngMu                sync.Mutex
+
+	// Metrics
+	requestCount   int64
+	retryCount     int64
+	requestCountMu sync.Mutex
+	startTime      time.Time
 }
 
 func NewClient(cfg *config.Config) (*Client, error) {
@@ -51,11 +57,34 @@ func NewClient(cfg *config.Config) (*Client, error) {
 		largeFolderThreshold: cfg.Graph.LargeFolderThreshold,
 		rangeDays:            cfg.Graph.RangeDays,
 		rng:                  rand.New(rand.NewSource(time.Now().UnixNano())),
+		startTime:            time.Now(),
 	}
 	if c.maxConcurrent > 0 {
 		c.sema = make(chan struct{}, c.maxConcurrent)
 	}
 	return c, nil
+}
+
+// Metrics returns current request stats
+func (c *Client) Metrics() (requests int64, retries int64, elapsed time.Duration, reqPerMin float64) {
+	c.requestCountMu.Lock()
+	requests = c.requestCount
+	retries = c.retryCount
+	c.requestCountMu.Unlock()
+	elapsed = time.Since(c.startTime)
+	if elapsed.Minutes() > 0 {
+		reqPerMin = float64(requests) / elapsed.Minutes()
+	}
+	return
+}
+
+// ResetMetrics resets the counters and start time
+func (c *Client) ResetMetrics() {
+	c.requestCountMu.Lock()
+	c.requestCount = 0
+	c.retryCount = 0
+	c.startTime = time.Now()
+	c.requestCountMu.Unlock()
 }
 
 type Message struct {
@@ -141,6 +170,11 @@ func (c *Client) do(ctx context.Context, method, url string, body io.Reader) (*h
 func (c *Client) doWithRetry(ctx context.Context, method, url string, body io.Reader) (*http.Response, error) {
 	const maxRetries = 5
 	for attempt := 0; ; attempt++ {
+		// Track request count
+		c.requestCountMu.Lock()
+		c.requestCount++
+		c.requestCountMu.Unlock()
+
 		resp, err := c.do(ctx, method, url, body)
 		if err != nil {
 			return nil, err
@@ -153,6 +187,11 @@ func (c *Client) doWithRetry(ctx context.Context, method, url string, body io.Re
 			resp.Body.Close()
 			return nil, fmt.Errorf("request failed after retries: %s", resp.Status)
 		}
+
+		// Track retry count
+		c.requestCountMu.Lock()
+		c.retryCount++
+		c.requestCountMu.Unlock()
 
 		delay := time.Second * time.Duration(1<<attempt)
 		if resp.StatusCode == http.StatusTooManyRequests {
