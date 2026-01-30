@@ -1,0 +1,24 @@
+services:
+  mailflow:
+    build: .
+    container_name: mailflow
+    restart: unless-stopped
+    volumes:
+      - ${APPDATA_PATH:-/home/apps/.config/appdata}/mailflow:/config:ro
+      - ./token-script:/app/token-script:ro
+    environment:
+      - TZ=${TZ:-America/Los_Angeles}
+    networks:
+      - apps
+    labels:
+      - "traefik.enable=true"
+      # Main webhook endpoint - no auth (Graph API needs direct access)
+      - "traefik.http.routers.mailflow.rule=Host(`mailflow.uberkitten.com`)"
+      - "traefik.http.routers.mailflow.entrypoints=websecure"
+      - "traefik.http.routers.mailflow.tls=true"
+      - "traefik.http.routers.mailflow.tls.certresolver=cloudflare"
+      - "traefik.http.services.mailflow.loadbalancer.server.port=8792"
+
+networks:
+  apps:
+    external: true

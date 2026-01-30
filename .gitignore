@@ -1,0 +1,10 @@
+# Binary
+mailflow
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Config (has secrets)
+config.yaml
