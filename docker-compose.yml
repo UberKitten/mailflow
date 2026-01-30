@@ -14,9 +14,10 @@ services:
       - "traefik.enable=true"
       # Main webhook endpoint - no auth (Graph API needs direct access)
       - "traefik.http.routers.mailflow.rule=Host(`mailflow.uberkitten.com`)"
-      - "traefik.http.routers.mailflow.entrypoints=websecure"
+      - "traefik.http.routers.mailflow.entrypoints=https"
       - "traefik.http.routers.mailflow.tls=true"
-      - "traefik.http.routers.mailflow.tls.certresolver=cloudflare"
+      - "traefik.http.routers.mailflow.tls.certresolver=letsEncryptCloudflare"
+      - "traefik.http.routers.mailflow.priority=50"
       - "traefik.http.services.mailflow.loadbalancer.server.port=8792"
 
 networks:
