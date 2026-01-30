@@ -2,7 +2,9 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -108,8 +110,23 @@ func runWebhook(cmd *cobra.Command, args []string) error {
 		errCh <- server.Start()
 	}()
 
-	// Give server a moment to start listening
-	time.Sleep(500 * time.Millisecond)
+	// Give server time to start listening
+	time.Sleep(2 * time.Second)
+	
+	// Verify server is responding before creating subscription
+	healthURL := fmt.Sprintf("http://localhost:%d/health", cfg.Webhook.Port)
+	for i := 0; i < 5; i++ {
+		resp, err := http.Get(healthURL)
+		if err == nil && resp.StatusCode == 200 {
+			resp.Body.Close()
+			slog.Info("webhook server ready")
+			break
+		}
+		if i == 4 {
+			slog.Warn("webhook server health check failed, continuing anyway")
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
 
 	// Start renewal loop
 	go subMgr.StartRenewalLoop(ctx)
