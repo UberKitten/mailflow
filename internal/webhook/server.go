@@ -3,10 +3,13 @@ package webhook
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -17,17 +20,18 @@ type WebhookConfig struct {
 	Port        int    `yaml:"port"`
 	Path        string `yaml:"path"`
 	ExternalURL string `yaml:"external_url"`
+	StateFile   string `yaml:"state_file"`
 }
 
 // Notification from Graph API
 type Notification struct {
-	ChangeType         string            `json:"changeType"`
-	ClientState        string            `json:"clientState"`
-	Resource           string            `json:"resource"`
-	ResourceData       *ResourceData     `json:"resourceData,omitempty"`
-	SubscriptionID     string            `json:"subscriptionId"`
-	SubscriptionExpiry string            `json:"subscriptionExpirationDateTime"`
-	TenantID           string            `json:"tenantId"`
+	ChangeType         string        `json:"changeType"`
+	ClientState        string        `json:"clientState"`
+	Resource           string        `json:"resource"`
+	ResourceData       *ResourceData `json:"resourceData,omitempty"`
+	SubscriptionID     string        `json:"subscriptionId"`
+	SubscriptionExpiry string        `json:"subscriptionExpirationDateTime"`
+	TenantID           string        `json:"tenantId"`
 }
 
 type ResourceData struct {
@@ -43,27 +47,71 @@ type NotificationPayload struct {
 // Handler processes incoming mail notifications
 type Handler func(ctx context.Context, messageID string) error
 
+type webhookState struct {
+	ClientState       string `json:"clientState"`
+	LastProcessedTime string `json:"lastProcessedTime,omitempty"`
+}
+
 // Server handles Graph webhook notifications
 type Server struct {
-	config  WebhookConfig
-	handler Handler
-	server  *http.Server
-	mu      sync.RWMutex
-	state   string // client state for validation
+	config        WebhookConfig
+	handler       Handler
+	server        *http.Server
+	mu            sync.RWMutex
+	clientState   string
+	lastProcessed time.Time
+	stateFile     string
 }
 
 // New creates a webhook server
 func New(cfg WebhookConfig, handler Handler) *Server {
-	return &Server{
-		config:  cfg,
-		handler: handler,
-		state:   fmt.Sprintf("mailflow-%d", time.Now().UnixNano()),
+	state := webhookState{}
+	if cfg.StateFile != "" {
+		loaded, err := loadWebhookState(cfg.StateFile)
+		if err != nil {
+			slog.Warn("failed to load webhook state", "error", err)
+		} else {
+			state = loaded
+		}
 	}
+
+	if state.ClientState == "" {
+		state.ClientState = generateClientState()
+		if err := writeWebhookState(cfg.StateFile, state); err != nil {
+			slog.Warn("failed to write webhook state", "error", err)
+		}
+	}
+
+	server := &Server{
+		config:      cfg,
+		handler:     handler,
+		clientState: state.ClientState,
+		stateFile:   cfg.StateFile,
+	}
+
+	if state.LastProcessedTime != "" {
+		if parsed, err := time.Parse(time.RFC3339, state.LastProcessedTime); err != nil {
+			slog.Warn("invalid webhook lastProcessedTime", "value", state.LastProcessedTime, "error", err)
+		} else {
+			server.lastProcessed = parsed
+		}
+	}
+
+	return server
 }
 
 // ClientState returns the state string for subscription creation
 func (s *Server) ClientState() string {
-	return s.state
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.clientState
+}
+
+// LastProcessedTime returns the last successful webhook processing time.
+func (s *Server) LastProcessedTime() time.Time {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.lastProcessed
 }
 
 // Start the webhook server
@@ -133,8 +181,8 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		for _, notification := range payload.Value {
 			// Validate client state
-			if notification.ClientState != s.state {
-				slog.Warn("invalid client state", "expected", s.state, "got", notification.ClientState)
+			if notification.ClientState != s.clientState {
+				slog.Warn("invalid client state", "expected", s.clientState, "got", notification.ClientState)
 				continue
 			}
 
@@ -154,12 +202,66 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 			}
 
 			slog.Info("processing new mail notification", "messageId", messageID)
-			
+
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			if err := s.handler(ctx, messageID); err != nil {
 				slog.Error("failed to process notification", "messageId", messageID, "error", err)
+			} else {
+				s.updateLastProcessedTime(time.Now().UTC())
 			}
 			cancel()
 		}
 	}()
+}
+
+func generateClientState() string {
+	return fmt.Sprintf("mailflow-%d", time.Now().UnixNano())
+}
+
+func loadWebhookState(path string) (webhookState, error) {
+	var state webhookState
+	if path == "" {
+		return state, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return state, nil
+		}
+		return state, err
+	}
+	if err := json.Unmarshal(data, &state); err != nil {
+		return state, err
+	}
+	return state, nil
+}
+
+func writeWebhookState(path string, state webhookState) error {
+	if path == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o644)
+}
+
+func (s *Server) updateLastProcessedTime(t time.Time) {
+	s.mu.Lock()
+	if t.After(s.lastProcessed) {
+		s.lastProcessed = t
+	}
+	state := webhookState{ClientState: s.clientState}
+	if !s.lastProcessed.IsZero() {
+		state.LastProcessedTime = s.lastProcessed.UTC().Format(time.RFC3339)
+	}
+	s.mu.Unlock()
+
+	if err := writeWebhookState(s.stateFile, state); err != nil {
+		slog.Warn("failed to persist webhook state", "error", err)
+	}
 }

@@ -25,6 +25,7 @@ type WebhookConfig struct {
 	Port                 int    `yaml:"port"`
 	Path                 string `yaml:"path"`
 	ExternalURL          string `yaml:"external_url"`
+	StateFile            string `yaml:"state_file"`
 	PollIntervalSeconds  int    `yaml:"poll_interval_seconds"`
 	RetryIntervalSeconds int    `yaml:"retry_interval_seconds"`
 }
@@ -159,6 +160,9 @@ func loadMainConfig(configDir string) (*Config, error) {
 	}
 	if cfg.Process.ResortWorkers == 0 {
 		cfg.Process.ResortWorkers = 6
+	}
+	if cfg.Webhook.StateFile == "" {
+		cfg.Webhook.StateFile = "/data/webhook-state.json"
 	}
 	if cfg.Webhook.PollIntervalSeconds == 0 {
 		cfg.Webhook.PollIntervalSeconds = 60
