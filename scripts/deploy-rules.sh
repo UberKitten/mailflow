@@ -34,6 +34,6 @@ git push
 
 # Update apps
 echo "==> Updating apps server..."
-ssh apps "~/mailflow/scripts/update-rules.sh"
+SSH_AUTH_SOCK="${SSH_AUTH_SOCK:-/home/m/.ssh/agent.sock}" ssh apps "~/mailflow/scripts/update-rules.sh"
 
 echo "==> Deploy complete!"
