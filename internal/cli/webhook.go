@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"mailflow/internal/config"
 	"mailflow/internal/engine"
@@ -101,21 +102,24 @@ func runWebhook(cmd *cobra.Command, args []string) error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM)
 
+	// Start server FIRST (so it's ready for Graph validation)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- server.Start()
+	}()
+
+	// Give server a moment to start listening
+	time.Sleep(500 * time.Millisecond)
+
 	// Start renewal loop
 	go subMgr.StartRenewalLoop(ctx)
 
-	// Create subscription
+	// Now create subscription (server is ready to handle validation)
 	slog.Info("creating Graph subscription", "url", cfg.Webhook.ExternalURL)
 	if err := subMgr.CreateOrRenew(ctx); err != nil {
 		slog.Error("failed to create subscription", "error", err)
 		// Continue anyway - server will still work for manual testing
 	}
-
-	// Start server in goroutine
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- server.Start()
-	}()
 
 	// Wait for shutdown signal or error
 	for {
