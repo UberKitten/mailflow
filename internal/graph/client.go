@@ -546,6 +546,10 @@ func buildDateRanges(start, end time.Time, days int) []dateRange {
 		ranges = append(ranges, dateRange{Start: cur, End: next})
 		cur = next
 	}
+	// Reverse to process newest ranges first
+	for i, j := 0, len(ranges)-1; i < j; i, j = i+1, j-1 {
+		ranges[i], ranges[j] = ranges[j], ranges[i]
+	}
 	return ranges
 }
 
