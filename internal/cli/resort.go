@@ -17,7 +17,7 @@ import (
 var resortCmd = &cobra.Command{
 	Use:   "resort <folder>",
 	Short: "Re-sort existing messages in a folder",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.RangeArgs(0, 1),
 	RunE:  runResort,
 }
 
@@ -27,21 +27,47 @@ func init() {
 	resortCmd.Flags().Bool("recursive", false, "scan subfolders recursively")
 	resortCmd.Flags().Duration("since", 0, "only process messages received since duration")
 	resortCmd.Flags().Bool("fast", false, "skip body-based rules and fetch minimal fields")
+	resortCmd.Flags().Bool("resume", false, "resume from last resort checkpoint")
+	resortCmd.Flags().String("checkpoint-path", "", "override resort checkpoint path")
 }
 
 func runResort(cmd *cobra.Command, args []string) error {
-	folder := args[0]
+	var folder string
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	apply, _ := cmd.Flags().GetBool("apply")
 	recursive, _ := cmd.Flags().GetBool("recursive")
 	since, _ := cmd.Flags().GetDuration("since")
 	fast, _ := cmd.Flags().GetBool("fast")
+	resume, _ := cmd.Flags().GetBool("resume")
+	checkpointPath, _ := cmd.Flags().GetString("checkpoint-path")
+	var before time.Time
 
 	if !dryRun && !apply {
 		return errors.New("must specify --dry-run or --apply")
 	}
 	if dryRun && apply {
 		return errors.New("cannot use --dry-run and --apply together")
+	}
+
+	if resume {
+		if len(args) > 0 {
+			return errors.New("cannot specify folder when using --resume")
+		}
+		if checkpointPath == "" {
+			checkpointPath = engine.DefaultResortCheckpointPath()
+		}
+		checkpoint, err := engine.LoadResortCheckpoint(checkpointPath)
+		if err != nil {
+			return fmt.Errorf("load checkpoint: %w", err)
+		}
+		folder = checkpoint.Folder
+		recursive = checkpoint.Recursive
+		before = checkpoint.LastTime
+	} else {
+		if len(args) == 0 {
+			return errors.New("must specify folder or use --resume")
+		}
+		folder = args[0]
 	}
 
 	cfgDir, _ := cmd.Root().Flags().GetString("config-dir")
@@ -58,7 +84,7 @@ func runResort(cmd *cobra.Command, args []string) error {
 	env := engine.New(cfg, rules, client)
 	ctx := context.Background()
 
-	report, err := env.Resort(ctx, folder, engine.ResortOptions{DryRun: dryRun, Recursive: recursive, Since: since, Fast: fast})
+	report, err := env.Resort(ctx, folder, engine.ResortOptions{DryRun: dryRun, Recursive: recursive, Since: since, Before: before, Fast: fast, CheckpointPath: checkpointPath})
 	if err != nil {
 		return err
 	}

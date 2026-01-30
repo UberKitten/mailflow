@@ -358,6 +358,7 @@ func (c *Client) listChildFolders(ctx context.Context, parentID string) ([]folde
 type ListOptions struct {
 	OnlyUnread bool
 	Since      time.Duration
+	Before     time.Time
 	Fields     []string
 	Fast       bool
 }
@@ -396,8 +397,13 @@ func (c *Client) StreamMessages(ctx context.Context, folderID string, opts ListO
 		sinceTime = time.Now().Add(-opts.Since).UTC()
 	}
 
+	beforeTime := opts.Before
+	if !beforeTime.IsZero() {
+		beforeTime = beforeTime.UTC()
+	}
+
 	if c.shouldBatch(ctx, folderID) {
-		start, end, ok, err := c.getDateBounds(ctx, folderID, filtersNoDate, sinceTime)
+		start, end, ok, err := c.getDateBounds(ctx, folderID, filtersNoDate, sinceTime, beforeTime)
 		if err != nil {
 			return err
 		}
@@ -440,6 +446,9 @@ func (c *Client) StreamMessages(ctx context.Context, folderID string, opts ListO
 	filters := append([]string{}, filtersNoDate...)
 	if !sinceTime.IsZero() {
 		filters = append(filters, fmt.Sprintf("receivedDateTime ge %s", sinceTime.Format(time.RFC3339)))
+	}
+	if !beforeTime.IsZero() {
+		filters = append(filters, fmt.Sprintf("receivedDateTime lt %s", beforeTime.Format(time.RFC3339)))
 	}
 	if len(filters) > 0 {
 		params.Set("$filter", strings.Join(filters, " and "))
@@ -506,7 +515,7 @@ func (c *Client) getFolderTotalCount(ctx context.Context, folderID string) (int,
 	return data.TotalItemCount, nil
 }
 
-func (c *Client) getDateBounds(ctx context.Context, folderID string, filters []string, since time.Time) (time.Time, time.Time, bool, error) {
+func (c *Client) getDateBounds(ctx context.Context, folderID string, filters []string, since time.Time, before time.Time) (time.Time, time.Time, bool, error) {
 	var start time.Time
 	if since.IsZero() {
 		earliest, ok, err := c.getEdgeDate(ctx, folderID, filters, true)
@@ -532,6 +541,12 @@ func (c *Client) getDateBounds(ctx context.Context, folderID string, filters []s
 		return time.Time{}, time.Time{}, false, nil
 	}
 	endExclusive := latest.Add(time.Second)
+	if !before.IsZero() && before.Before(endExclusive) {
+		endExclusive = before
+	}
+	if endExclusive.Before(start) || endExclusive.Equal(start) {
+		return time.Time{}, time.Time{}, false, nil
+	}
 	return start, endExclusive, true, nil
 }
 
@@ -704,13 +719,13 @@ func (c *Client) GetMessage(ctx context.Context, msgID string) (*Message, error)
 	params := url.Values{}
 	params.Set("$select", "id,subject,from,toRecipients,body,bodyPreview,isRead,receivedDateTime,parentFolderId")
 	endpoint := fmt.Sprintf("%s/me/messages/%s?%s", c.baseURL, msgID, params.Encode())
-	
+
 	resp, err := c.doWithRetry(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, fmt.Errorf("message not found: %s", msgID)
 	}
@@ -718,12 +733,12 @@ func (c *Client) GetMessage(ctx context.Context, msgID string) (*Message, error)
 		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("get message failed: %s - %s", resp.Status, string(body))
 	}
-	
+
 	var gm graphMessage
 	if err := json.NewDecoder(resp.Body).Decode(&gm); err != nil {
 		return nil, fmt.Errorf("decode message: %w", err)
 	}
-	
+
 	msg := toMessage(gm)
 	return &msg, nil
 }
@@ -733,17 +748,17 @@ func (c *Client) GetMessageFolder(ctx context.Context, msgID string) (string, er
 	params := url.Values{}
 	params.Set("$select", "parentFolderId")
 	endpoint := fmt.Sprintf("%s/me/messages/%s?%s", c.baseURL, msgID, params.Encode())
-	
+
 	resp, err := c.doWithRetry(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode >= 300 {
 		return "", fmt.Errorf("get message folder failed: %s", resp.Status)
 	}
-	
+
 	var result struct {
 		ParentFolderID string `json:"parentFolderId"`
 	}

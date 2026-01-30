@@ -2,13 +2,17 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"os/signal"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"mailflow/internal/config"
@@ -406,10 +410,85 @@ func expandVars(template string, vars map[string]string) string {
 
 // ResortOptions controls resort behavior.
 type ResortOptions struct {
-	DryRun    bool
-	Recursive bool
-	Since     time.Duration
-	Fast      bool
+	DryRun         bool
+	Recursive      bool
+	Since          time.Duration
+	Before         time.Time
+	Fast           bool
+	CheckpointPath string
+}
+
+// ResortCheckpoint stores resume state for resort.
+type ResortCheckpoint struct {
+	Folder    string    `json:"folder"`
+	Recursive bool      `json:"recursive"`
+	LastTime  time.Time `json:"lastTime"`
+	Processed int       `json:"processed"`
+	StartedAt time.Time `json:"startedAt"`
+}
+
+// DefaultResortCheckpointPath returns the default checkpoint path.
+func DefaultResortCheckpointPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "resort-checkpoint.json"
+	}
+	return filepath.Join(home, ".config", "appdata", "mailflow", "resort-checkpoint.json")
+}
+
+func expandCheckpointPath(path string) string {
+	if path == "" {
+		return path
+	}
+	if strings.HasPrefix(path, "~") {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			return filepath.Join(home, strings.TrimPrefix(path, "~/"))
+		}
+	}
+	return path
+}
+
+func LoadResortCheckpoint(path string) (*ResortCheckpoint, error) {
+	path = expandCheckpointPath(path)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var checkpoint ResortCheckpoint
+	if err := json.Unmarshal(data, &checkpoint); err != nil {
+		return nil, err
+	}
+	return &checkpoint, nil
+}
+
+func writeResortCheckpoint(path string, checkpoint ResortCheckpoint) error {
+	path = expandCheckpointPath(path)
+	if path == "" {
+		return nil
+	}
+	if checkpoint.LastTime.IsZero() {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(checkpoint, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o644)
+}
+
+func deleteResortCheckpoint(path string) error {
+	path = expandCheckpointPath(path)
+	if path == "" {
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 type MoveRecord struct {
@@ -429,6 +508,15 @@ type ResortReport struct {
 
 func (e *Engine) Resort(ctx context.Context, folder string, opts ResortOptions) (*ResortReport, error) {
 	start := time.Now()
+	checkpointPath := opts.CheckpointPath
+	if checkpointPath == "" {
+		checkpointPath = DefaultResortCheckpointPath()
+	}
+	checkpointPath = expandCheckpointPath(checkpointPath)
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	folderID, err := e.client.FindFolderIDByPath(ctx, folder)
 	if err != nil {
 		return nil, err
@@ -465,6 +553,36 @@ func (e *Engine) Resort(ctx context.Context, folder string, opts ResortOptions) 
 
 	report := &ResortReport{StartedAt: start}
 	var reportMu sync.Mutex
+	var lastTime time.Time
+
+	writeCheckpoint := func() {
+		reportMu.Lock()
+		checkpoint := ResortCheckpoint{
+			Folder:    folder,
+			Recursive: opts.Recursive,
+			LastTime:  lastTime,
+			Processed: report.Total,
+			StartedAt: start,
+		}
+		reportMu.Unlock()
+		if err := writeResortCheckpoint(checkpointPath, checkpoint); err != nil {
+			slog.Warn("write checkpoint failed", "error", err)
+		}
+	}
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
+	go func() {
+		select {
+		case <-sigCh:
+			slog.Warn("resort interrupted, writing checkpoint")
+			writeCheckpoint()
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 
 	workerLimit := e.cfg.Process.ResortWorkers
 	if workerLimit <= 0 {
@@ -480,17 +598,22 @@ func (e *Engine) Resort(ctx context.Context, folder string, opts ResortOptions) 
 			defer func() { <-sem }()
 
 			slog.Info("starting stream", "folder", f.Path, "fast", opts.Fast)
-			listOpts := graph.ListOptions{Since: opts.Since, Fast: opts.Fast}
+			listOpts := graph.ListOptions{Since: opts.Since, Before: opts.Before, Fast: opts.Fast}
 			if opts.Fast {
 				listOpts.Fields = []string{"id", "from", "subject", "toRecipients"}
 			}
 			err := e.client.StreamMessages(gctx, f.ID, listOpts, func(msg graph.Message) error {
 				reportMu.Lock()
 				report.Total++
+				if !msg.Received.IsZero() {
+					if lastTime.IsZero() || msg.Received.Before(lastTime) {
+						lastTime = msg.Received
+					}
+				}
 				total := report.Total
 				moved := report.Moved
 				reportMu.Unlock()
-				
+
 				if total%500 == 0 {
 					elapsed := time.Since(start)
 					emailsPerSec := float64(total) / elapsed.Seconds()
@@ -503,6 +626,7 @@ func (e *Engine) Resort(ctx context.Context, folder string, opts ResortOptions) 
 						"retries", retries,
 						"req/min", fmt.Sprintf("%.1f", reqPerMin),
 						"elapsed", elapsed.Round(time.Second))
+					writeCheckpoint()
 				}
 
 				rule := Match(e.rules, msg, MatchOptions{Fast: opts.Fast})
@@ -540,6 +664,9 @@ func (e *Engine) Resort(ctx context.Context, folder string, opts ResortOptions) 
 	}
 	if err := g.Wait(); err != nil {
 		return nil, err
+	}
+	if err := deleteResortCheckpoint(checkpointPath); err != nil {
+		slog.Warn("delete checkpoint failed", "error", err)
 	}
 	return report, nil
 }
