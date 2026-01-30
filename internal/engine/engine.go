@@ -487,7 +487,13 @@ func (e *Engine) Resort(ctx context.Context, folder string, opts ResortOptions) 
 			err := e.client.StreamMessages(gctx, f.ID, listOpts, func(msg graph.Message) error {
 				reportMu.Lock()
 				report.Total++
+				total := report.Total
+				moved := report.Moved
 				reportMu.Unlock()
+				
+				if total%500 == 0 {
+					slog.Info("resort progress", "processed", total, "moved", moved)
+				}
 
 				rule := Match(e.rules, msg, MatchOptions{Fast: opts.Fast})
 				if rule == nil {
