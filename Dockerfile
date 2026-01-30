@@ -25,5 +25,5 @@ COPY --from=builder /app/mailflow /app/mailflow
 # Config directory
 VOLUME /config
 
-ENTRYPOINT ["/app/mailflow"]
+ENTRYPOINT ["/app/mailflow", "--config-dir=/config"]
 CMD ["process", "--watch"]
