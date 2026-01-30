@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -63,6 +64,10 @@ func (e *Engine) ProcessOnce(ctx context.Context, since time.Duration) error {
 			return err
 		}
 		if err := e.client.MoveMessage(ctx, msg.ID, destID); err != nil {
+			if errors.Is(err, graph.ErrMessageGone) {
+				slog.Warn("message gone before move", "id", msg.ID, "subject", msg.Subject)
+				return nil
+			}
 			return err
 		}
 		slog.Info("moved", "id", msg.ID, "from", msg.From, "subject", msg.Subject, "rule", rule.Name, "folder", rule.Folder)
@@ -121,6 +126,10 @@ func (e *Engine) ProcessSingle(ctx context.Context, messageID string) error {
 	}
 
 	if err := e.client.MoveMessage(ctx, messageID, destID); err != nil {
+		if errors.Is(err, graph.ErrMessageGone) {
+			slog.Warn("message gone before move", "id", messageID, "subject", msg.Subject)
+			return nil
+		}
 		return fmt.Errorf("move message: %w", err)
 	}
 
@@ -494,6 +503,10 @@ func (e *Engine) Resort(ctx context.Context, folder string, opts ResortOptions) 
 				destID := folderCache[rule.Folder]
 				if !opts.DryRun {
 					if err := e.client.MoveMessage(gctx, msg.ID, destID); err != nil {
+						if errors.Is(err, graph.ErrMessageGone) {
+							slog.Warn("message gone, skipping", "subject", msg.Subject, "from", msg.From)
+							return nil
+						}
 						return err
 					}
 				}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -22,6 +23,9 @@ import (
 
 	"golang.org/x/sync/errgroup"
 )
+
+// ErrMessageGone is returned when a message was deleted or moved before we could act on it.
+var ErrMessageGone = errors.New("message no longer exists")
 
 type Client struct {
 	baseURL     string
@@ -642,6 +646,10 @@ func (c *Client) MoveMessage(ctx context.Context, msgID, destFolderID string) er
 		return err
 	}
 	defer resp.Body.Close()
+	// 400/404 usually means the message was deleted or moved by someone else
+	if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusNotFound {
+		return ErrMessageGone
+	}
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("move failed: %s", resp.Status)
 	}
