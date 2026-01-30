@@ -1,0 +1,15 @@
+graph:
+  token_script: /app/token-script/token-script.sh
+
+pushover:
+  token: "YOUR_PUSHOVER_TOKEN"
+  user: "YOUR_PUSHOVER_USER"
+
+process:
+  poll_interval_seconds: 60
+
+webhook:
+  enabled: true
+  port: 8792
+  path: /webhook
+  external_url: https://mailflow.example.com/webhook
