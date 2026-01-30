@@ -343,7 +343,7 @@ type dateRange struct {
 // If fn returns an error, streaming stops and that error is returned.
 func (c *Client) StreamMessages(ctx context.Context, folderID string, opts ListOptions, fn func(msg Message) error) error {
 	params := url.Values{}
-	params.Set("$top", "250")
+	params.Set("$top", "50")
 	params.Set("$orderby", "receivedDateTime desc")
 	params.Set("$select", buildSelect(opts))
 
