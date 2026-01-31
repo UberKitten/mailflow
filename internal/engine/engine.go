@@ -727,7 +727,7 @@ func (e *Engine) Resort(ctx context.Context, folder string, opts ResortOptions) 
 				moved := report.Moved
 				reportMu.Unlock()
 
-				if total%500 == 0 {
+				if total%50 == 0 {
 					elapsed := time.Since(start)
 					emailsPerSec := float64(total) / elapsed.Seconds()
 					requests, retries, _, reqPerMin := e.client.Metrics()
@@ -897,7 +897,7 @@ func (e *Engine) ResortSender(ctx context.Context, folder, senderPattern string,
 				report.Matched++
 				reportMu.Unlock()
 
-				if scanned%500 == 0 {
+				if scanned%50 == 0 {
 					elapsed := time.Since(start)
 					emailsPerSec := float64(scanned) / elapsed.Seconds()
 					requests, retries, _, reqPerMin := e.client.Metrics()
