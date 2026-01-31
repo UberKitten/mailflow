@@ -22,12 +22,14 @@ var gapsCmd = &cobra.Command{
 func init() {
 	gapsCmd.Flags().Int("top", 50, "show top N senders")
 	gapsCmd.Flags().Bool("fast", false, "skip body-based rules")
+	gapsCmd.Flags().Bool("recursive", false, "scan subfolders recursively")
 }
 
 func runGaps(cmd *cobra.Command, args []string) error {
 	folder := args[0]
 	top, _ := cmd.Flags().GetInt("top")
 	fast, _ := cmd.Flags().GetBool("fast")
+	recursive, _ := cmd.Flags().GetBool("recursive")
 	cfgDir, _ := cmd.Root().Flags().GetString("config-dir")
 
 	cfg, rules, err := config.Load(cfgDir)
@@ -43,7 +45,7 @@ func runGaps(cmd *cobra.Command, args []string) error {
 	env := engine.New(cfg, rules, client)
 	ctx := context.Background()
 
-	result, err := env.Gaps(ctx, folder, engine.GapsOptions{Fast: fast})
+	result, err := env.Gaps(ctx, folder, engine.GapsOptions{Fast: fast, Recursive: recursive})
 	if err != nil {
 		return err
 	}

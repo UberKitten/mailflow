@@ -28,10 +28,10 @@ var (
 )
 
 type Engine struct {
-	cfg         *config.Config
-	rules       *config.RuleSet
-	client      *graph.Client
-	watchFolder string
+	cfg           *config.Config
+	rules         *config.RuleSet
+	client        *graph.Client
+	watchFolder   string
 	watchFolderID string
 }
 
@@ -728,7 +728,8 @@ type GapReport struct {
 
 // GapsOptions controls gaps behavior.
 type GapsOptions struct {
-	Fast bool
+	Fast      bool
+	Recursive bool
 }
 
 func (e *Engine) Gaps(ctx context.Context, folder string, opts GapsOptions) (*GapReport, error) {
@@ -736,20 +737,33 @@ func (e *Engine) Gaps(ctx context.Context, folder string, opts GapsOptions) (*Ga
 	if err != nil {
 		return nil, err
 	}
+
+	var folderIDs []graph.FolderInfo
+	if opts.Recursive {
+		folderIDs, err = e.client.ListFolderTree(ctx, folderID, folder)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		folderIDs = []graph.FolderInfo{{ID: folderID, Path: folder}}
+	}
+
 	result := &GapReport{ByDomain: map[string]int{}}
-	err = e.client.StreamMessages(ctx, folderID, graph.ListOptions{Fields: []string{"id", "from"}, Fast: opts.Fast}, func(msg graph.Message) error {
-		if Match(e.rules, msg, MatchOptions{Fast: opts.Fast}) != nil {
+	for _, f := range folderIDs {
+		err = e.client.StreamMessages(ctx, f.ID, graph.ListOptions{Fields: []string{"id", "from"}, Fast: opts.Fast}, func(msg graph.Message) error {
+			if Match(e.rules, msg, MatchOptions{Fast: opts.Fast}) != nil {
+				return nil
+			}
+			domain := domainFromEmail(msg.From)
+			if domain == "" {
+				domain = "(unknown)"
+			}
+			result.ByDomain[domain]++
 			return nil
+		})
+		if err != nil {
+			return nil, err
 		}
-		domain := domainFromEmail(msg.From)
-		if domain == "" {
-			domain = "(unknown)"
-		}
-		result.ByDomain[domain]++
-		return nil
-	})
-	if err != nil {
-		return nil, err
 	}
 
 	return result, nil
