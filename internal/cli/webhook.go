@@ -181,22 +181,26 @@ func runWebhook(cmd *cobra.Command, args []string) error {
 		slog.Info("polling fallback stopped")
 	}
 
-	runCatchup := func() {
-		last := server.LastProcessedTime()
-		if last.IsZero() {
-			slog.Info("no webhook last processed time, skipping catchup")
+	runStartupResort := func() {
+		// Check if startup resort is enabled (default true)
+		if cfg.Webhook.StartupResort != nil && !*cfg.Webhook.StartupResort {
+			slog.Info("startup resort disabled")
 			return
 		}
-		since := time.Since(last)
-		if since < 0 {
-			since = 0
+
+		slog.Info("running startup resort", "folder", watchFolder)
+		resortCtx, cancelResort := context.WithTimeout(ctx, 10*time.Minute)
+		defer cancelResort()
+
+		report, err := eng.Resort(resortCtx, watchFolder, engine.ResortOptions{
+			Fast:   false, // Full processing - body matching, on_match actions, etc.
+			DryRun: false,
+		})
+		if err != nil {
+			slog.Error("startup resort failed", "error", err)
+			return
 		}
-		slog.Info("running webhook catchup", "since", since, "lastProcessed", last)
-		catchCtx, cancelCatch := context.WithTimeout(ctx, 10*time.Minute)
-		defer cancelCatch()
-		if err := eng.ProcessOnce(catchCtx, since); err != nil {
-			slog.Error("catchup poll failed", "error", err)
-		}
+		slog.Info("startup resort complete", "processed", report.Total, "moved", report.Moved)
 	}
 
 	sigCh := make(chan os.Signal, 1)
@@ -250,13 +254,13 @@ func runWebhook(cmd *cobra.Command, args []string) error {
 					}
 					slog.Info("Graph subscription active, disabling polling fallback")
 					stopPolling()
-					runCatchup()
+					runStartupResort()
 					return
 				}
 			}
 		}()
 	} else {
-		runCatchup()
+		runStartupResort()
 	}
 
 	// Wait for shutdown signal or error

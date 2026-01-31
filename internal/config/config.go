@@ -27,7 +27,7 @@ var knownGraphKeys = map[string]bool{
 var knownWebhookKeys = map[string]bool{
 	"enabled": true, "port": true, "path": true, "external_url": true,
 	"state_file": true, "watch_folder": true, "poll_interval_seconds": true,
-	"retry_interval_seconds": true,
+	"retry_interval_seconds": true, "startup_resort": true,
 }
 
 // knownProcessKeys are the valid keys in the process section
@@ -186,6 +186,7 @@ type WebhookConfig struct {
 	WatchFolder          string `yaml:"watch_folder"` // folder path to watch, default "Inbox"
 	PollIntervalSeconds  int    `yaml:"poll_interval_seconds"`
 	RetryIntervalSeconds int    `yaml:"retry_interval_seconds"`
+	StartupResort        *bool  `yaml:"startup_resort"` // resort watch folder on startup, default true
 }
 
 type GraphConfig struct {
