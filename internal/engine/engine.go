@@ -185,13 +185,17 @@ func (e *Engine) sendPushover(msg graph.Message, rule *config.Rule) {
 
 // MatchOptions controls rule matching behavior.
 type MatchOptions struct {
-	Fast bool
+	Fast           bool
+	IgnoreCatchall bool
 }
 
 // Match returns the first rule that matches.
 func Match(rules *config.RuleSet, msg graph.Message, opts MatchOptions) *config.Rule {
 	for i := range rules.Rules {
 		rule := &rules.Rules[i]
+		if opts.IgnoreCatchall && rule.Catchall {
+			continue
+		}
 		if ruleMatches(*rule, msg, opts) {
 			return rule
 		}
@@ -751,7 +755,7 @@ func (e *Engine) Gaps(ctx context.Context, folder string, opts GapsOptions) (*Ga
 	result := &GapReport{ByDomain: map[string]int{}}
 	for _, f := range folderIDs {
 		err = e.client.StreamMessages(ctx, f.ID, graph.ListOptions{Fields: []string{"id", "from"}, Fast: opts.Fast}, func(msg graph.Message) error {
-			if Match(e.rules, msg, MatchOptions{Fast: opts.Fast}) != nil {
+			if Match(e.rules, msg, MatchOptions{Fast: opts.Fast, IgnoreCatchall: true}) != nil {
 				return nil
 			}
 			domain := domainFromEmail(msg.From)

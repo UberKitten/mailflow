@@ -74,6 +74,7 @@ type Rule struct {
 	SubjectContains []string
 	BodyContains    []string
 	CaseInsensitive bool
+	Catchall        bool
 	OnMatch         *OnMatch
 
 	fromDomainRefs []string
@@ -417,6 +418,9 @@ func (r *Rule) UnmarshalYAML(value *yaml.Node) error {
 	}
 	if node, ok := raw["case_insensitive"]; ok {
 		_ = node.Decode(&r.CaseInsensitive)
+	}
+	if node, ok := raw["catchall"]; ok {
+		_ = node.Decode(&r.Catchall)
 	}
 	if node, ok := raw["on_match"]; ok {
 		var onMatch OnMatch
