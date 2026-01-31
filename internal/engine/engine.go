@@ -28,13 +28,21 @@ var (
 )
 
 type Engine struct {
-	cfg    *config.Config
-	rules  *config.RuleSet
-	client *graph.Client
+	cfg         *config.Config
+	rules       *config.RuleSet
+	client      *graph.Client
+	watchFolder string
+	watchFolderID string
 }
 
 func New(cfg *config.Config, rules *config.RuleSet, client *graph.Client) *Engine {
 	return &Engine{cfg: cfg, rules: rules, client: client}
+}
+
+// SetWatchFolder sets the folder to watch for webhook processing.
+func (e *Engine) SetWatchFolder(folder, folderID string) {
+	e.watchFolder = folder
+	e.watchFolderID = folderID
 }
 
 func (e *Engine) Reload(cfg *config.Config, rules *config.RuleSet) error {
@@ -93,20 +101,26 @@ func (e *Engine) ProcessOnce(ctx context.Context, since time.Duration) error {
 
 // ProcessSingle processes a single message by ID (used by webhook)
 func (e *Engine) ProcessSingle(ctx context.Context, messageID string) error {
-	// Check if message is in Inbox
+	// Check if message is in the watch folder
 	folderID, err := e.client.GetMessageFolder(ctx, messageID)
 	if err != nil {
 		return fmt.Errorf("get message folder: %w", err)
 	}
 
-	inboxID, err := e.client.FindFolderIDByPath(ctx, "Inbox")
-	if err != nil {
-		return fmt.Errorf("find inbox: %w", err)
+	// Determine expected folder - use watch folder if set, otherwise Inbox
+	expectedFolderID := e.watchFolderID
+	expectedFolderName := e.watchFolder
+	if expectedFolderID == "" {
+		expectedFolderID, err = e.client.FindFolderIDByPath(ctx, "Inbox")
+		if err != nil {
+			return fmt.Errorf("find inbox: %w", err)
+		}
+		expectedFolderName = "Inbox"
 	}
 
-	// Only process if in Inbox
-	if folderID != inboxID {
-		slog.Debug("message not in inbox, skipping", "messageId", messageID, "folder", folderID)
+	// Only process if in expected folder
+	if folderID != expectedFolderID {
+		slog.Debug("message not in watch folder, skipping", "messageId", messageID, "folder", folderID, "expected", expectedFolderName)
 		return nil
 	}
 

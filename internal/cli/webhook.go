@@ -93,17 +93,25 @@ func runWebhook(cmd *cobra.Command, args []string) error {
 	}
 	
 	var resource string
+	var watchFolderID string
 	if watchFolder == "Inbox" {
 		resource = "me/mailFolders('Inbox')/messages"
+		watchFolderID, err = client.FindFolderIDByPath(context.Background(), "Inbox")
+		if err != nil {
+			return fmt.Errorf("failed to resolve Inbox folder: %w", err)
+		}
 	} else {
 		// Resolve folder path to ID
-		folderID, err := client.FindFolderIDByPath(context.Background(), watchFolder)
+		watchFolderID, err = client.FindFolderIDByPath(context.Background(), watchFolder)
 		if err != nil {
 			return fmt.Errorf("failed to resolve watch folder %q: %w", watchFolder, err)
 		}
-		resource = fmt.Sprintf("me/mailFolders('%s')/messages", folderID)
-		slog.Info("watching folder", "path", watchFolder, "id", folderID)
+		resource = fmt.Sprintf("me/mailFolders('%s')/messages", watchFolderID)
+		slog.Info("watching folder", "path", watchFolder, "id", watchFolderID)
 	}
+	
+	// Tell the engine which folder to expect messages from
+	eng.SetWatchFolder(watchFolder, watchFolderID)
 
 	// Create subscription manager
 	subMgr := webhook.NewSubscriptionManager(
