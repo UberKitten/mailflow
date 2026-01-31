@@ -61,6 +61,7 @@ var knownRuleKeys = map[string]bool{
 	"from_domain": true, "to_domain": true,
 	"subject_contains": true, "subject_contains_any": true,
 	"body_contains": true, "body_contains_any": true,
+	"body_prefix_contains": true, "body_prefix_length": true,
 	"subject_not_contains": true, "body_not_contains": true,
 	"case_insensitive": true, "catchall": true, "on_match": true,
 }
@@ -233,6 +234,8 @@ type Rule struct {
 	SubjectNotContains []string
 	BodyContains       []string
 	BodyNotContains    []string
+	BodyPrefixContains []string
+	BodyPrefixLength   int
 	CaseInsensitive    bool
 	Catchall           bool
 	OnMatch            *OnMatch

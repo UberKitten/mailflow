@@ -281,6 +281,10 @@ func ruleMatches(rule config.Rule, msg graph.Message, opts MatchOptions) bool {
 		return false
 	}
 
+	if opts.Fast && len(rule.BodyPrefixContains) > 0 {
+		return false
+	}
+
 	if len(rule.SubjectContains) > 0 {
 		matched := false
 		for _, s := range rule.SubjectContains {
@@ -338,6 +342,32 @@ func ruleMatches(rule config.Rule, msg graph.Message, opts MatchOptions) bool {
 			if strings.Contains(body, cmp) {
 				return false
 			}
+		}
+	}
+
+	// body_prefix_contains: check only the first N characters of the body
+	if len(rule.BodyPrefixContains) > 0 {
+		prefixLen := rule.BodyPrefixLength
+		if prefixLen <= 0 {
+			prefixLen = 1000 // default to 1000 chars
+		}
+		prefix := body
+		if len(prefix) > prefixLen {
+			prefix = prefix[:prefixLen]
+		}
+		matched := false
+		for _, s := range rule.BodyPrefixContains {
+			cmp := s
+			if rule.CaseInsensitive {
+				cmp = strings.ToLower(cmp)
+			}
+			if strings.Contains(prefix, cmp) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
 		}
 	}
 

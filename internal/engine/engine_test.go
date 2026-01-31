@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"strings"
 	"testing"
 
 	"mailflow/internal/config"
@@ -293,6 +294,83 @@ func TestMatchBodyNotContainsExcludes(t *testing.T) {
 	msg2 := graph.Message{Body: "Special offer! Click here. Unsubscribe here."}
 	if Match(rules, msg2, MatchOptions{}) != nil {
 		t.Fatal("expected NO match when body exclusion present")
+	}
+}
+
+// --- body_prefix_contains tests ---
+
+func TestMatchBodyPrefixContains(t *testing.T) {
+	rules := &config.RuleSet{Rules: []config.Rule{
+		{
+			Name:               "ad-at-top",
+			BodyPrefixContains: []string{"ADVERTISEMENT", "SPONSORED"},
+			BodyPrefixLength:   100,
+			CaseInsensitive:    true,
+		},
+	}}
+
+	// Should match: ADVERTISEMENT at the start
+	msg := graph.Message{Body: "ADVERTISEMENT\n\nHere is the newsletter content..."}
+	if Match(rules, msg, MatchOptions{}) == nil {
+		t.Fatal("expected match for ADVERTISEMENT at start of body")
+	}
+
+	// Should match: SPONSORED within prefix
+	msg2 := graph.Message{Body: "Weekly Update\nSPONSORED CONTENT\nMore stuff here..."}
+	if Match(rules, msg2, MatchOptions{}) == nil {
+		t.Fatal("expected match for SPONSORED within prefix")
+	}
+
+	// Should NOT match: ADVERTISEMENT appears after prefix length
+	longPrefix := strings.Repeat("x", 150)
+	msg3 := graph.Message{Body: longPrefix + "ADVERTISEMENT buried here"}
+	if Match(rules, msg3, MatchOptions{}) != nil {
+		t.Fatal("expected NO match for ADVERTISEMENT beyond prefix length")
+	}
+}
+
+func TestMatchBodyPrefixContainsDefaultLength(t *testing.T) {
+	// No BodyPrefixLength specified, should default to 1000
+	rules := &config.RuleSet{Rules: []config.Rule{
+		{
+			Name:               "ad-default",
+			BodyPrefixContains: []string{"ADVERTISEMENT"},
+		},
+	}}
+
+	// Should match: within default 1000 chars
+	prefix := strings.Repeat("x", 500)
+	msg := graph.Message{Body: prefix + "ADVERTISEMENT here"}
+	if Match(rules, msg, MatchOptions{}) == nil {
+		t.Fatal("expected match within default 1000 char prefix")
+	}
+
+	// Should NOT match: beyond default 1000 chars
+	longPrefix := strings.Repeat("x", 1100)
+	msg2 := graph.Message{Body: longPrefix + "ADVERTISEMENT buried"}
+	if Match(rules, msg2, MatchOptions{}) != nil {
+		t.Fatal("expected NO match beyond default 1000 char prefix")
+	}
+}
+
+func TestMatchFastModeSkipsBodyPrefixRules(t *testing.T) {
+	rules := &config.RuleSet{Rules: []config.Rule{
+		{Name: "prefix-rule", BodyPrefixContains: []string{"AD"}},
+		{Name: "from-rule", From: []string{"*@example.com"}},
+	}}
+
+	msg := graph.Message{From: "user@example.com", Body: "AD at the top"}
+
+	// In fast mode, body prefix rule should be skipped
+	rule := Match(rules, msg, MatchOptions{Fast: true})
+	if rule == nil || rule.Name != "from-rule" {
+		t.Fatalf("expected from-rule in fast mode, got %v", rule)
+	}
+
+	// In normal mode, prefix rule matches first
+	rule2 := Match(rules, msg, MatchOptions{Fast: false})
+	if rule2 == nil || rule2.Name != "prefix-rule" {
+		t.Fatalf("expected prefix-rule in normal mode, got %v", rule2)
 	}
 }
 
