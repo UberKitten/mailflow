@@ -582,7 +582,6 @@ func (e *Engine) Resort(ctx context.Context, folder string, opts ResortOptions) 
 	}
 
 	// Build folder ID cache from rules
-	fmt.Fprintln(os.Stderr, "DEBUG: building folder cache")
 	folderCache := make(map[string]string)
 	for _, rule := range e.rules.Rules {
 		if rule.Folder == "" {
