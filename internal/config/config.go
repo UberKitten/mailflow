@@ -65,17 +65,19 @@ type RuleSet struct {
 
 // Rule definition.
 type Rule struct {
-	Name            string
-	Folder          string
-	From            []string
-	To              []string
-	FromDomain      []string
-	ToDomain        []string
-	SubjectContains []string
-	BodyContains    []string
-	CaseInsensitive bool
-	Catchall        bool
-	OnMatch         *OnMatch
+	Name               string
+	Folder             string
+	From               []string
+	To                 []string
+	FromDomain         []string
+	ToDomain           []string
+	SubjectContains    []string
+	SubjectNotContains []string
+	BodyContains       []string
+	BodyNotContains    []string
+	CaseInsensitive    bool
+	Catchall           bool
+	OnMatch            *OnMatch
 
 	fromDomainRefs []string
 	toDomainRefs   []string
@@ -415,6 +417,20 @@ func (r *Rule) UnmarshalYAML(value *yaml.Node) error {
 			return err
 		}
 		r.BodyContains = append(r.BodyContains, list...)
+	}
+	if node, ok := raw["subject_not_contains"]; ok {
+		list, err := decodeStringList(node)
+		if err != nil {
+			return err
+		}
+		r.SubjectNotContains = append(r.SubjectNotContains, list...)
+	}
+	if node, ok := raw["body_not_contains"]; ok {
+		list, err := decodeStringList(node)
+		if err != nil {
+			return err
+		}
+		r.BodyNotContains = append(r.BodyNotContains, list...)
 	}
 	if node, ok := raw["case_insensitive"]; ok {
 		_ = node.Decode(&r.CaseInsensitive)

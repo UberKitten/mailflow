@@ -298,6 +298,19 @@ func ruleMatches(rule config.Rule, msg graph.Message, opts MatchOptions) bool {
 		}
 	}
 
+	// subject_not_contains: if ANY pattern matches, rule fails (exclusion logic)
+	if len(rule.SubjectNotContains) > 0 {
+		for _, s := range rule.SubjectNotContains {
+			cmp := s
+			if rule.CaseInsensitive {
+				cmp = strings.ToLower(cmp)
+			}
+			if strings.Contains(subject, cmp) {
+				return false
+			}
+		}
+	}
+
 	if len(rule.BodyContains) > 0 {
 		matched := false
 		for _, s := range rule.BodyContains {
@@ -312,6 +325,19 @@ func ruleMatches(rule config.Rule, msg graph.Message, opts MatchOptions) bool {
 		}
 		if !matched {
 			return false
+		}
+	}
+
+	// body_not_contains: if ANY pattern matches, rule fails (exclusion logic)
+	if len(rule.BodyNotContains) > 0 {
+		for _, s := range rule.BodyNotContains {
+			cmp := s
+			if rule.CaseInsensitive {
+				cmp = strings.ToLower(cmp)
+			}
+			if strings.Contains(body, cmp) {
+				return false
+			}
 		}
 	}
 

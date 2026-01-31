@@ -162,3 +162,297 @@ func TestBuildPushoverDefaultMessage(t *testing.T) {
 		t.Fatalf("expected subject fallback, got %q", payload.Message)
 	}
 }
+
+// --- subject_not_contains tests ---
+
+func TestMatchSubjectNotContainsExcludes(t *testing.T) {
+	rules := &config.RuleSet{Rules: []config.Rule{
+		{
+			Name:               "policy-updates",
+			SubjectContains:    []string{"privacy policy"},
+			SubjectNotContains: []string{"privacy request", "action needed"},
+			CaseInsensitive:    true,
+		},
+	}}
+
+	// Should match: has "privacy policy" but no exclusion patterns
+	msg := graph.Message{Subject: "We've updated our privacy policy"}
+	if Match(rules, msg, MatchOptions{}) == nil {
+		t.Fatal("expected match for policy update without exclusions")
+	}
+
+	// Should NOT match: has "privacy request" exclusion
+	msg2 := graph.Message{Subject: "Privacy policy - Privacy request submitted"}
+	if Match(rules, msg2, MatchOptions{}) != nil {
+		t.Fatal("expected NO match when exclusion pattern present")
+	}
+
+	// Should NOT match: has "action needed" exclusion
+	msg3 := graph.Message{Subject: "Privacy policy update - action needed"}
+	if Match(rules, msg3, MatchOptions{}) != nil {
+		t.Fatal("expected NO match for action needed exclusion")
+	}
+}
+
+func TestMatchSubjectNotContainsCaseInsensitive(t *testing.T) {
+	rules := &config.RuleSet{Rules: []config.Rule{
+		{
+			Name:               "case-test",
+			SubjectContains:    []string{"update"},
+			SubjectNotContains: []string{"urgent"},
+			CaseInsensitive:    true,
+		},
+	}}
+
+	// Should NOT match: URGENT should match case-insensitively
+	msg := graph.Message{Subject: "System Update - URGENT"}
+	if Match(rules, msg, MatchOptions{}) != nil {
+		t.Fatal("expected NO match for case-insensitive exclusion")
+	}
+
+	// Should match: no exclusion pattern
+	msg2 := graph.Message{Subject: "system update available"}
+	if Match(rules, msg2, MatchOptions{}) == nil {
+		t.Fatal("expected match without exclusion pattern")
+	}
+}
+
+func TestMatchSubjectNotContainsCaseSensitive(t *testing.T) {
+	rules := &config.RuleSet{Rules: []config.Rule{
+		{
+			Name:               "case-sensitive-test",
+			SubjectContains:    []string{"update"},
+			SubjectNotContains: []string{"URGENT"},
+			CaseInsensitive:    false,
+		},
+	}}
+
+	// Should match: "urgent" (lowercase) doesn't match "URGENT"
+	msg := graph.Message{Subject: "update - urgent"}
+	if Match(rules, msg, MatchOptions{}) == nil {
+		t.Fatal("expected match: lowercase 'urgent' should not trigger exclusion")
+	}
+
+	// Should NOT match: exact case "URGENT"
+	msg2 := graph.Message{Subject: "update - URGENT"}
+	if Match(rules, msg2, MatchOptions{}) != nil {
+		t.Fatal("expected NO match for exact case exclusion")
+	}
+}
+
+func TestMatchSubjectNotContainsMultiplePatterns(t *testing.T) {
+	rules := &config.RuleSet{Rules: []config.Rule{
+		{
+			Name:               "multi-exclude",
+			SubjectContains:    []string{"newsletter"},
+			SubjectNotContains: []string{"unsubscribe", "opt-out", "remove me"},
+			CaseInsensitive:    true,
+		},
+	}}
+
+	// Any exclusion pattern should block
+	cases := []struct {
+		subject string
+		want    bool // true = should match
+	}{
+		{"Monthly newsletter", true},
+		{"Newsletter - click to unsubscribe", false},
+		{"Newsletter opt-out confirmation", false},
+		{"Remove me from newsletter", false},
+		{"Newsletter subscription confirmed", true},
+	}
+
+	for _, tc := range cases {
+		msg := graph.Message{Subject: tc.subject}
+		got := Match(rules, msg, MatchOptions{}) != nil
+		if got != tc.want {
+			t.Errorf("subject %q: got match=%v, want match=%v", tc.subject, got, tc.want)
+		}
+	}
+}
+
+// --- body_not_contains tests ---
+
+func TestMatchBodyNotContainsExcludes(t *testing.T) {
+	rules := &config.RuleSet{Rules: []config.Rule{
+		{
+			Name:            "promo",
+			BodyContains:    []string{"special offer"},
+			BodyNotContains: []string{"unsubscribe here", "opt out"},
+			CaseInsensitive: true,
+		},
+	}}
+
+	// Should match: promo without unsubscribe link
+	msg := graph.Message{Body: "Check out this special offer just for you!"}
+	if Match(rules, msg, MatchOptions{}) == nil {
+		t.Fatal("expected match for promo without exclusion")
+	}
+
+	// Should NOT match: has unsubscribe link
+	msg2 := graph.Message{Body: "Special offer! Click here. Unsubscribe here."}
+	if Match(rules, msg2, MatchOptions{}) != nil {
+		t.Fatal("expected NO match when body exclusion present")
+	}
+}
+
+// --- Rule priority ordering tests ---
+
+func TestMatchRulePriorityOrder(t *testing.T) {
+	// Simulates rules loaded from 10-security.yaml before 50-promotions.yaml
+	rules := &config.RuleSet{Rules: []config.Rule{
+		{Name: "security", From: []string{"*@bank.com"}, SubjectContains: []string{"code"}},
+		{Name: "promo", From: []string{"*@bank.com"}},
+	}}
+
+	// Security rule should win for 2FA emails
+	msg := graph.Message{From: "alerts@bank.com", Subject: "Your verification code"}
+	rule := Match(rules, msg, MatchOptions{})
+	if rule == nil || rule.Name != "security" {
+		t.Fatalf("expected security rule to match first, got %v", rule)
+	}
+
+	// Promo rule matches generic bank emails
+	msg2 := graph.Message{From: "marketing@bank.com", Subject: "New credit card offers"}
+	rule2 := Match(rules, msg2, MatchOptions{})
+	if rule2 == nil || rule2.Name != "promo" {
+		t.Fatalf("expected promo rule to match, got %v", rule2)
+	}
+}
+
+func TestMatchCatchallIgnored(t *testing.T) {
+	rules := &config.RuleSet{Rules: []config.Rule{
+		{Name: "specific", From: []string{"known@example.com"}},
+		{Name: "catchall", Catchall: true},
+	}}
+
+	// With IgnoreCatchall, unknown sender gets no match
+	msg := graph.Message{From: "unknown@random.com"}
+	rule := Match(rules, msg, MatchOptions{IgnoreCatchall: true})
+	if rule != nil {
+		t.Fatalf("expected no match with IgnoreCatchall, got %v", rule)
+	}
+
+	// Without IgnoreCatchall, catchall matches
+	rule2 := Match(rules, msg, MatchOptions{IgnoreCatchall: false})
+	if rule2 == nil || rule2.Name != "catchall" {
+		t.Fatalf("expected catchall match, got %v", rule2)
+	}
+}
+
+// --- Fast mode tests ---
+
+func TestMatchFastModeSkipsBodyRules(t *testing.T) {
+	rules := &config.RuleSet{Rules: []config.Rule{
+		{Name: "body-rule", BodyContains: []string{"secret"}},
+		{Name: "from-rule", From: []string{"*@example.com"}},
+	}}
+
+	msg := graph.Message{From: "user@example.com", Body: "The secret code"}
+
+	// In fast mode, body rule should be skipped
+	rule := Match(rules, msg, MatchOptions{Fast: true})
+	if rule == nil || rule.Name != "from-rule" {
+		t.Fatalf("expected from-rule in fast mode, got %v", rule)
+	}
+
+	// In normal mode, body rule matches first
+	rule2 := Match(rules, msg, MatchOptions{Fast: false})
+	if rule2 == nil || rule2.Name != "body-rule" {
+		t.Fatalf("expected body-rule in normal mode, got %v", rule2)
+	}
+}
+
+// --- Partial match tests ---
+
+func TestMatchSubjectPartialMatch(t *testing.T) {
+	rules := &config.RuleSet{Rules: []config.Rule{
+		{
+			Name:            "partial",
+			SubjectContains: []string{"privacy"},
+			CaseInsensitive: true,
+		},
+	}}
+
+	// Should match: "privacy" is substring
+	cases := []string{
+		"Privacy Policy Update",
+		"Your privacy settings",
+		"New privacy features announced",
+		"PRIVACY notice",
+	}
+
+	for _, subject := range cases {
+		msg := graph.Message{Subject: subject}
+		if Match(rules, msg, MatchOptions{}) == nil {
+			t.Errorf("expected partial match for subject %q", subject)
+		}
+	}
+
+	// Should NOT match: no "privacy" substring
+	msg := graph.Message{Subject: "Terms of Service Update"}
+	if Match(rules, msg, MatchOptions{}) != nil {
+		t.Fatal("expected no match without 'privacy' substring")
+	}
+}
+
+// --- Domain extraction tests ---
+
+func TestMatchFromDomainExtraction(t *testing.T) {
+	rules := &config.RuleSet{Rules: []config.Rule{
+		{Name: "domain", FromDomain: []string{"example.com"}},
+	}}
+
+	cases := []struct {
+		from string
+		want bool
+	}{
+		{"user@example.com", true},
+		{"admin@example.com", true},
+		{"user@sub.example.com", false}, // subdomain doesn't match
+		{"user@notexample.com", false},
+		{"invalid-email", false},
+		// Note: "@example.com" is malformed but domainFromEmail still extracts "example.com"
+		// In practice, MS Graph always provides well-formed addresses
+	}
+
+	for _, tc := range cases {
+		msg := graph.Message{From: tc.from}
+		got := Match(rules, msg, MatchOptions{}) != nil
+		if got != tc.want {
+			t.Errorf("from %q: got match=%v, want match=%v", tc.from, got, tc.want)
+		}
+	}
+}
+
+// --- Wildcard pattern tests ---
+
+func TestMatchWildcardPatterns(t *testing.T) {
+	rules := &config.RuleSet{Rules: []config.Rule{
+		{Name: "prefix-wildcard", From: []string{"noreply-*@company.com"}},
+		{Name: "suffix-wildcard", From: []string{"*-alerts@company.com"}},
+		{Name: "middle-wildcard", From: []string{"team-*-notifications@company.com"}},
+	}}
+
+	cases := []struct {
+		from     string
+		wantRule string
+	}{
+		{"noreply-123@company.com", "prefix-wildcard"},
+		{"noreply-orders@company.com", "prefix-wildcard"},
+		{"security-alerts@company.com", "suffix-wildcard"},
+		{"team-engineering-notifications@company.com", "middle-wildcard"},
+	}
+
+	for _, tc := range cases {
+		msg := graph.Message{From: tc.from}
+		rule := Match(rules, msg, MatchOptions{})
+		if rule == nil || rule.Name != tc.wantRule {
+			name := ""
+			if rule != nil {
+				name = rule.Name
+			}
+			t.Errorf("from %q: got rule %q, want %q", tc.from, name, tc.wantRule)
+		}
+	}
+}
