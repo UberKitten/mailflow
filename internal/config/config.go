@@ -4,12 +4,169 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
 
 	"gopkg.in/yaml.v3"
 )
+
+// knownConfigKeys are the valid top-level keys in config.yaml
+var knownConfigKeys = map[string]bool{
+	"include": true, "graph": true, "pushover": true, "process": true, "webhook": true,
+}
+
+// knownGraphKeys are the valid keys in the graph section
+var knownGraphKeys = map[string]bool{
+	"token_script": true, "base_url": true, "max_concurrent_requests": true,
+	"range_workers": true, "large_folder_threshold": true, "range_days": true,
+}
+
+// knownWebhookKeys are the valid keys in the webhook section
+var knownWebhookKeys = map[string]bool{
+	"enabled": true, "port": true, "path": true, "external_url": true,
+	"state_file": true, "watch_folder": true, "poll_interval_seconds": true,
+	"retry_interval_seconds": true,
+}
+
+// knownProcessKeys are the valid keys in the process section
+var knownProcessKeys = map[string]bool{
+	"poll_interval_seconds": true, "resort_workers": true,
+}
+
+// knownPushoverKeys are the valid keys in the pushover section
+var knownPushoverKeys = map[string]bool{
+	"token": true, "user": true,
+}
+
+// knownSenderListKeys are the valid keys in sender list files
+var knownSenderListKeys = map[string]bool{
+	"name": true, "domains": true, "addresses": true,
+}
+
+// knownRuleFileKeys are the valid top-level keys in rule files
+var knownRuleFileKeys = map[string]bool{
+	"version": true, "folders": true, "rules": true,
+}
+
+// knownFolderRulesKeys are the valid keys in folder definitions
+var knownFolderRulesKeys = map[string]bool{
+	"path": true, "rules": true,
+}
+
+// knownRuleKeys are the valid keys in rule definitions
+var knownRuleKeys = map[string]bool{
+	"name": true, "folder": true, "from": true, "to": true,
+	"from_domain": true, "to_domain": true,
+	"subject_contains": true, "subject_contains_any": true,
+	"body_contains": true, "body_contains_any": true,
+	"subject_not_contains": true, "body_not_contains": true,
+	"case_insensitive": true, "catchall": true, "on_match": true,
+}
+
+// knownOnMatchKeys are the valid keys in on_match blocks
+var knownOnMatchKeys = map[string]bool{
+	"mark_read": true, "pushover": true,
+}
+
+// knownPushoverRuleKeys are the valid keys in pushover rule blocks
+var knownPushoverRuleKeys = map[string]bool{
+	"title": true, "message": true, "fallback": true, "extract": true,
+}
+
+// knownExtractPatternKeys are the valid keys in extract pattern blocks
+var knownExtractPatternKeys = map[string]bool{
+	"pattern": true, "capture": true,
+}
+
+// warnUnknownKeys checks a YAML mapping node for keys not in the known set
+// and logs warnings for any unknown keys found.
+func warnUnknownKeys(node *yaml.Node, known map[string]bool, context string) {
+	if node.Kind != yaml.MappingNode {
+		return
+	}
+	for i := 0; i < len(node.Content); i += 2 {
+		key := node.Content[i].Value
+		if !known[key] {
+			log.Printf("WARNING: unknown config key %q in %s (line %d)", key, context, node.Content[i].Line)
+		}
+	}
+}
+
+// checkUnknownKeysInData unmarshals YAML data into a node and checks for unknown keys
+func checkUnknownKeysInData(data []byte, known map[string]bool, context string) error {
+	var node yaml.Node
+	if err := yaml.Unmarshal(data, &node); err != nil {
+		return err
+	}
+	if node.Kind == yaml.DocumentNode && len(node.Content) > 0 {
+		warnUnknownKeys(node.Content[0], known, context)
+	}
+	return nil
+}
+
+// checkNestedUnknownKeys checks for unknown keys in nested sections of config.yaml
+func checkNestedUnknownKeys(data []byte, configPath string) error {
+	var node yaml.Node
+	if err := yaml.Unmarshal(data, &node); err != nil {
+		return err
+	}
+	if node.Kind != yaml.DocumentNode || len(node.Content) == 0 {
+		return nil
+	}
+	root := node.Content[0]
+	if root.Kind != yaml.MappingNode {
+		return nil
+	}
+
+	for i := 0; i < len(root.Content); i += 2 {
+		key := root.Content[i].Value
+		val := root.Content[i+1]
+
+		switch key {
+		case "graph":
+			warnUnknownKeys(val, knownGraphKeys, configPath+" -> graph")
+		case "webhook":
+			warnUnknownKeys(val, knownWebhookKeys, configPath+" -> webhook")
+		case "process":
+			warnUnknownKeys(val, knownProcessKeys, configPath+" -> process")
+		case "pushover":
+			warnUnknownKeys(val, knownPushoverKeys, configPath+" -> pushover")
+		}
+	}
+	return nil
+}
+
+// checkRuleFileNestedKeys checks folder definitions in rule files for unknown keys
+func checkRuleFileNestedKeys(data []byte, filePath string) {
+	var node yaml.Node
+	if err := yaml.Unmarshal(data, &node); err != nil {
+		return
+	}
+	if node.Kind != yaml.DocumentNode || len(node.Content) == 0 {
+		return
+	}
+	root := node.Content[0]
+	if root.Kind != yaml.MappingNode {
+		return
+	}
+
+	for i := 0; i < len(root.Content); i += 2 {
+		key := root.Content[i].Value
+		val := root.Content[i+1]
+
+		if key == "folders" && val.Kind == yaml.MappingNode {
+			// Check each folder definition
+			for j := 0; j < len(val.Content); j += 2 {
+				folderName := val.Content[j].Value
+				folderDef := val.Content[j+1]
+				warnUnknownKeys(folderDef, knownFolderRulesKeys,
+					fmt.Sprintf("%s -> folders -> %s", filePath, folderName))
+			}
+		}
+	}
+}
 
 // Config is the main config file (config.yaml)
 type Config struct {
@@ -138,6 +295,11 @@ func loadMainConfig(configDir string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read config.yaml: %w", err)
 	}
+
+	// Check for unknown keys at top level and nested sections
+	_ = checkUnknownKeysInData(data, knownConfigKeys, path)
+	_ = checkNestedUnknownKeys(data, path)
+
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config.yaml: %w", err)
@@ -197,6 +359,10 @@ func loadSenders(configDir string) (map[string]SenderList, error) {
 		if err != nil {
 			return err
 		}
+
+		// Check for unknown keys in sender list
+		_ = checkUnknownKeysInData(data, knownSenderListKeys, entry)
+
 		var list SenderList
 		if err := yaml.Unmarshal(data, &list); err != nil {
 			return fmt.Errorf("parse sender list %s: %w", entry, err)
@@ -242,6 +408,11 @@ func loadRules(configDir string, cfg *Config, senders map[string]SenderList) (*R
 		if err != nil {
 			return nil, err
 		}
+
+		// Check for unknown keys in rule file
+		_ = checkUnknownKeysInData(data, knownRuleFileKeys, path)
+		checkRuleFileNestedKeys(data, path)
+
 		var rf RuleFile
 		if err := yaml.Unmarshal(data, &rf); err != nil {
 			return nil, fmt.Errorf("parse rules file %s: %w", path, err)
@@ -444,7 +615,72 @@ func (r *Rule) UnmarshalYAML(value *yaml.Node) error {
 			return err
 		}
 		r.OnMatch = &onMatch
+
+		// Check for unknown keys in on_match
+		checkOnMatchKeys(node)
+	}
+
+	// Warn about unknown keys in rule
+	for key := range raw {
+		if !knownRuleKeys[key] {
+			ruleName := r.Name
+			if ruleName == "" {
+				ruleName = "(unnamed)"
+			}
+			log.Printf("WARNING: unknown rule key %q in rule %s", key, ruleName)
+		}
 	}
 
 	return nil
+}
+
+// checkOnMatchKeys checks for unknown keys in on_match blocks
+func checkOnMatchKeys(node *yaml.Node) {
+	if node.Kind != yaml.MappingNode {
+		return
+	}
+	for i := 0; i < len(node.Content); i += 2 {
+		key := node.Content[i].Value
+		if !knownOnMatchKeys[key] {
+			log.Printf("WARNING: unknown on_match key %q (line %d)", key, node.Content[i].Line)
+		}
+		// Check pushover sub-block
+		if key == "pushover" {
+			checkPushoverRuleKeys(node.Content[i+1])
+		}
+	}
+}
+
+// checkPushoverRuleKeys checks for unknown keys in pushover rule blocks
+func checkPushoverRuleKeys(node *yaml.Node) {
+	if node.Kind != yaml.MappingNode {
+		return
+	}
+	for i := 0; i < len(node.Content); i += 2 {
+		key := node.Content[i].Value
+		if !knownPushoverRuleKeys[key] {
+			log.Printf("WARNING: unknown pushover key %q (line %d)", key, node.Content[i].Line)
+		}
+		// Check extract array
+		if key == "extract" {
+			checkExtractPatterns(node.Content[i+1])
+		}
+	}
+}
+
+// checkExtractPatterns checks for unknown keys in extract pattern blocks
+func checkExtractPatterns(node *yaml.Node) {
+	if node.Kind != yaml.SequenceNode {
+		return
+	}
+	for _, item := range node.Content {
+		if item.Kind == yaml.MappingNode {
+			for i := 0; i < len(item.Content); i += 2 {
+				key := item.Content[i].Value
+				if !knownExtractPatternKeys[key] {
+					log.Printf("WARNING: unknown extract key %q (line %d)", key, item.Content[i].Line)
+				}
+			}
+		}
+	}
 }
