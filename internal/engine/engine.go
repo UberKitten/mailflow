@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -710,11 +711,48 @@ func (e *Engine) Resort(ctx context.Context, folder string, opts ResortOptions) 
 			defer func() { <-sem }()
 
 			slog.Info("starting stream", "folder", f.Path, "fast", opts.Fast)
+			slog.Info("fetching messages from Graph API...")
+
+			// Heartbeat goroutine to show we're still alive during slow API calls
+			heartbeatCtx, heartbeatCancel := context.WithCancel(gctx)
+			defer heartbeatCancel()
+			var lastProgress atomic.Int64
+			lastProgress.Store(time.Now().UnixNano())
+			go func() {
+				ticker := time.NewTicker(15 * time.Second)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-heartbeatCtx.Done():
+						return
+					case <-ticker.C:
+						lastTime := time.Unix(0, lastProgress.Load())
+						if time.Since(lastTime) > 10*time.Second {
+							reportMu.Lock()
+							total := report.Total
+							moved := report.Moved
+							reportMu.Unlock()
+							elapsed := time.Since(start)
+							requests, retries, _, reqPerMin := e.client.Metrics()
+							slog.Info("still working...",
+								"processed", total,
+								"moved", moved,
+								"requests", requests,
+								"retries", retries,
+								"req/min", fmt.Sprintf("%.1f", reqPerMin),
+								"elapsed", elapsed.Round(time.Second))
+						}
+					}
+				}
+			}()
+
 			listOpts := graph.ListOptions{Since: opts.Since, Before: before, Fast: opts.Fast}
 			if opts.Fast {
 				listOpts.Fields = []string{"id", "from", "subject", "toRecipients"}
 			}
 			err := e.client.StreamMessages(gctx, f.ID, listOpts, func(msg graph.Message) error {
+				lastProgress.Store(time.Now().UnixNano())
+
 				reportMu.Lock()
 				report.Total++
 				if !msg.Received.IsZero() {
@@ -877,11 +915,48 @@ func (e *Engine) ResortSender(ctx context.Context, folder, senderPattern string,
 			defer func() { <-sem }()
 
 			slog.Info("starting stream", "folder", f.Path, "pattern", senderPattern, "fast", opts.Fast)
+			slog.Info("fetching messages from Graph API...")
+
+			// Heartbeat goroutine to show we're still alive during slow API calls
+			heartbeatCtx, heartbeatCancel := context.WithCancel(gctx)
+			defer heartbeatCancel()
+			var lastProgress atomic.Int64
+			lastProgress.Store(time.Now().UnixNano())
+			go func() {
+				ticker := time.NewTicker(15 * time.Second)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-heartbeatCtx.Done():
+						return
+					case <-ticker.C:
+						lastTime := time.Unix(0, lastProgress.Load())
+						if time.Since(lastTime) > 10*time.Second {
+							reportMu.Lock()
+							scanned := report.Scanned
+							moved := report.Moved
+							reportMu.Unlock()
+							elapsed := time.Since(start)
+							requests, retries, _, reqPerMin := e.client.Metrics()
+							slog.Info("still working...",
+								"scanned", scanned,
+								"moved", moved,
+								"requests", requests,
+								"retries", retries,
+								"req/min", fmt.Sprintf("%.1f", reqPerMin),
+								"elapsed", elapsed.Round(time.Second))
+						}
+					}
+				}
+			}()
+
 			listOpts := graph.ListOptions{Since: opts.Since, Fast: opts.Fast}
 			if opts.Fast {
 				listOpts.Fields = []string{"id", "from", "subject", "toRecipients", "receivedDateTime"}
 			}
 			err := e.client.StreamMessages(gctx, f.ID, listOpts, func(msg graph.Message) error {
+				lastProgress.Store(time.Now().UnixNano())
+
 				reportMu.Lock()
 				report.Scanned++
 				scanned := report.Scanned
