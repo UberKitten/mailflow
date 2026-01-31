@@ -418,6 +418,12 @@ func domainFromEmail(addr string) string {
 	return parts[1]
 }
 
+// MatchSender checks if an email address matches a pattern (supports * wildcards).
+// Pattern matching is case-insensitive.
+func MatchSender(pattern, email string) bool {
+	return matchPattern(pattern, email, true)
+}
+
 // BuildPushover extracts data and builds payload.
 func BuildPushover(cfg *config.PushoverRule, msg graph.Message) pushover.Payload {
 	vars := map[string]string{
@@ -777,6 +783,170 @@ func (e *Engine) Resort(ctx context.Context, folder string, opts ResortOptions) 
 	}
 	if err := deleteResortCheckpoint(checkpointPath); err != nil {
 		slog.Warn("delete checkpoint failed", "error", err)
+	}
+	return report, nil
+}
+
+// ResortSenderOptions controls resort-sender behavior.
+type ResortSenderOptions struct {
+	DryRun    bool
+	Recursive bool
+	Since     time.Duration
+	Fast      bool
+	ConfigDir string
+}
+
+// ResortSenderReport contains results of a sender-specific resort.
+type ResortSenderReport struct {
+	StartedAt time.Time
+	Scanned   int // total messages scanned
+	Matched   int // messages matching sender pattern
+	Moved     int
+	Unmatched int // matched sender but no rule matched
+	Moves     []MoveRecord
+}
+
+// ResortSender re-sorts messages matching a sender pattern.
+func (e *Engine) ResortSender(ctx context.Context, folder, senderPattern string, opts ResortSenderOptions) (*ResortSenderReport, error) {
+	start := time.Now()
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	folderID, err := e.client.FindFolderIDByPath(ctx, folder)
+	if err != nil {
+		return nil, err
+	}
+
+	var folderIDs []graph.FolderInfo
+	if opts.Recursive {
+		folderIDs, err = e.client.ListFolderTree(ctx, folderID, folder)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		folderIDs = []graph.FolderInfo{{ID: folderID, Path: folder}}
+	}
+
+	// Build folder ID cache from rules
+	folderCache := make(map[string]string)
+	for _, rule := range e.rules.Rules {
+		if rule.Folder == "" {
+			continue
+		}
+		if _, ok := folderCache[rule.Folder]; ok {
+			continue
+		}
+		slog.Info("resolving folder", "folder", rule.Folder)
+		id, err := e.client.FindFolderIDByPath(ctx, rule.Folder)
+		if err != nil {
+			return nil, fmt.Errorf("resolve folder %s: %w", rule.Folder, err)
+		}
+		folderCache[rule.Folder] = id
+	}
+	slog.Info("folder cache built", "count", len(folderCache))
+
+	report := &ResortSenderReport{StartedAt: start}
+	var reportMu sync.Mutex
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
+	go func() {
+		select {
+		case <-sigCh:
+			slog.Warn("resort-sender interrupted")
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
+	workerLimit := e.cfg.Process.ResortWorkers
+	if workerLimit <= 0 {
+		workerLimit = 6
+	}
+
+	g, gctx := errgroup.WithContext(ctx)
+	sem := make(chan struct{}, workerLimit)
+	for _, f := range folderIDs {
+		f := f
+
+		g.Go(func() error {
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			slog.Info("starting stream", "folder", f.Path, "pattern", senderPattern, "fast", opts.Fast)
+			listOpts := graph.ListOptions{Since: opts.Since, Fast: opts.Fast}
+			if opts.Fast {
+				listOpts.Fields = []string{"id", "from", "subject", "toRecipients", "receivedDateTime"}
+			}
+			err := e.client.StreamMessages(gctx, f.ID, listOpts, func(msg graph.Message) error {
+				reportMu.Lock()
+				report.Scanned++
+				scanned := report.Scanned
+				moved := report.Moved
+				reportMu.Unlock()
+
+				// Check if sender matches pattern
+				if !MatchSender(senderPattern, msg.From) {
+					return nil
+				}
+
+				reportMu.Lock()
+				report.Matched++
+				reportMu.Unlock()
+
+				if scanned%500 == 0 {
+					elapsed := time.Since(start)
+					emailsPerSec := float64(scanned) / elapsed.Seconds()
+					requests, retries, _, reqPerMin := e.client.Metrics()
+					slog.Info("resort-sender progress",
+						"scanned", scanned,
+						"matched", report.Matched,
+						"moved", moved,
+						"emails/sec", fmt.Sprintf("%.1f", emailsPerSec),
+						"requests", requests,
+						"retries", retries,
+						"req/min", fmt.Sprintf("%.1f", reqPerMin),
+						"elapsed", elapsed.Round(time.Second))
+				}
+
+				rule := Match(e.rules, msg, MatchOptions{Fast: opts.Fast})
+				if rule == nil {
+					reportMu.Lock()
+					report.Unmatched++
+					reportMu.Unlock()
+					return nil
+				}
+				if rule.Folder == f.Path {
+					return nil
+				}
+
+				destID := folderCache[rule.Folder]
+				if !opts.DryRun {
+					if err := e.client.MoveMessage(gctx, msg.ID, destID); err != nil {
+						if errors.Is(err, graph.ErrMessageGone) {
+							slog.Warn("message gone, skipping", "subject", msg.Subject, "from", msg.From)
+							return nil
+						}
+						return err
+					}
+				}
+				reportMu.Lock()
+				report.Moved++
+				report.Moves = append(report.Moves, MoveRecord{FromFolder: f.Path, ToFolder: rule.Folder, From: msg.From, Subject: msg.Subject})
+				reportMu.Unlock()
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return nil, err
 	}
 	return report, nil
 }

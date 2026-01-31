@@ -534,3 +534,49 @@ func TestMatchWildcardPatterns(t *testing.T) {
 		}
 	}
 }
+
+func TestMatchSender(t *testing.T) {
+	tests := []struct {
+		pattern string
+		email   string
+		want    bool
+	}{
+		// Exact match
+		{"user@example.com", "user@example.com", true},
+		{"user@example.com", "other@example.com", false},
+
+		// Domain wildcard
+		{"*@example.com", "user@example.com", true},
+		{"*@example.com", "admin@example.com", true},
+		{"*@example.com", "user@other.com", false},
+
+		// Prefix wildcard
+		{"newsletter@*", "newsletter@example.com", true},
+		{"newsletter@*", "newsletter@company.org", true},
+		{"newsletter@*", "news@example.com", false},
+
+		// Contains wildcard
+		{"*news*@*", "newsletter@example.com", true},
+		{"*news*@*", "daily-news@site.com", true},
+		{"*news*@*", "updates@site.com", false},
+
+		// Case insensitivity
+		{"*@EXAMPLE.COM", "user@example.com", true},
+		{"USER@example.com", "user@EXAMPLE.COM", true},
+
+		// Complex patterns
+		{"*-updates@*.company.com", "daily-updates@mail.company.com", true},
+		{"*-updates@*.company.com", "updates@mail.company.com", false},
+
+		// Single character wildcard
+		{"user?@example.com", "user1@example.com", true},
+		{"user?@example.com", "user12@example.com", false},
+	}
+
+	for _, tc := range tests {
+		got := MatchSender(tc.pattern, tc.email)
+		if got != tc.want {
+			t.Errorf("MatchSender(%q, %q) = %v, want %v", tc.pattern, tc.email, got, tc.want)
+		}
+	}
+}

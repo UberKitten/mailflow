@@ -29,6 +29,7 @@ func init() {
 
 	rootCmd.AddCommand(processCmd)
 	rootCmd.AddCommand(resortCmd)
+	rootCmd.AddCommand(resortSenderCmd)
 	rootCmd.AddCommand(gapsCmd)
 	rootCmd.AddCommand(configCmd)
 	rootCmd.AddCommand(reloadCmd)
