@@ -950,7 +950,7 @@ func (e *Engine) ResortSender(ctx context.Context, folder, senderPattern string,
 				}
 			}()
 
-			listOpts := graph.ListOptions{Since: opts.Since, Fast: opts.Fast}
+			listOpts := graph.ListOptions{Since: opts.Since, Fast: opts.Fast, SenderFilter: senderPattern}
 			if opts.Fast {
 				listOpts.Fields = []string{"id", "from", "subject", "toRecipients", "receivedDateTime"}
 			}
@@ -963,7 +963,8 @@ func (e *Engine) ResortSender(ctx context.Context, folder, senderPattern string,
 				moved := report.Moved
 				reportMu.Unlock()
 
-				// Check if sender matches pattern
+				// Check if sender matches pattern (still needed for complex patterns
+				// that can't be filtered server-side, and as a safety check)
 				if !MatchSender(senderPattern, msg.From) {
 					return nil
 				}

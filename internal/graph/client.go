@@ -356,11 +356,12 @@ func (c *Client) listChildFolders(ctx context.Context, parentID string) ([]folde
 
 // ListOptions controls message listing.
 type ListOptions struct {
-	OnlyUnread bool
-	Since      time.Duration
-	Before     time.Time
-	Fields     []string
-	Fast       bool
+	OnlyUnread   bool
+	Since        time.Duration
+	Before       time.Time
+	Fields       []string
+	Fast         bool
+	SenderFilter string // Graph API filter for from/emailAddress/address (supports * wildcards)
 }
 
 func (c *Client) ListMessages(ctx context.Context, folderID string, opts ListOptions) ([]Message, error) {
@@ -381,6 +382,50 @@ type dateRange struct {
 
 // StreamMessages streams messages from Graph in pages and invokes fn for each message.
 // If fn returns an error, streaming stops and that error is returned.
+// senderPatternToFilter converts a glob-style sender pattern to a Graph API $filter clause.
+// Returns empty string if the pattern can't be converted to a server-side filter.
+// Supported patterns:
+//   - "user@domain.com" → from/emailAddress/address eq 'user@domain.com'
+//   - "*@domain.com" → endsWith(from/emailAddress/address, '@domain.com')
+//   - "user@*" → startsWith(from/emailAddress/address, 'user@')
+//
+// Complex patterns like "*news*@*" require client-side filtering (returns empty string).
+func senderPatternToFilter(pattern string) string {
+	if pattern == "" {
+		return ""
+	}
+
+	// Lowercase for case-insensitive matching
+	pattern = strings.ToLower(pattern)
+
+	// Count wildcards
+	starCount := strings.Count(pattern, "*")
+
+	switch starCount {
+	case 0:
+		// Exact match: user@domain.com
+		return fmt.Sprintf("from/emailAddress/address eq '%s'", pattern)
+
+	case 1:
+		if strings.HasPrefix(pattern, "*") && !strings.Contains(pattern[1:], "*") {
+			// Suffix match: *@domain.com
+			suffix := pattern[1:] // "@domain.com"
+			return fmt.Sprintf("endsWith(from/emailAddress/address, '%s')", suffix)
+		}
+		if strings.HasSuffix(pattern, "*") && !strings.Contains(pattern[:len(pattern)-1], "*") {
+			// Prefix match: user@*
+			prefix := pattern[:len(pattern)-1] // "user@"
+			return fmt.Sprintf("startsWith(from/emailAddress/address, '%s')", prefix)
+		}
+		// Single wildcard in the middle - can't filter server-side
+		return ""
+
+	default:
+		// Multiple wildcards - can't filter server-side
+		return ""
+	}
+}
+
 func (c *Client) StreamMessages(ctx context.Context, folderID string, opts ListOptions, fn func(msg Message) error) error {
 	params := url.Values{}
 	params.Set("$top", "50")
@@ -390,6 +435,16 @@ func (c *Client) StreamMessages(ctx context.Context, folderID string, opts ListO
 	var filtersNoDate []string
 	if opts.OnlyUnread {
 		filtersNoDate = append(filtersNoDate, "isRead eq false")
+	}
+
+	// Add sender filter if provided
+	if opts.SenderFilter != "" {
+		if senderFilter := senderPatternToFilter(opts.SenderFilter); senderFilter != "" {
+			filtersNoDate = append(filtersNoDate, senderFilter)
+			slog.Info("using server-side sender filter", "pattern", opts.SenderFilter, "filter", senderFilter)
+		} else {
+			slog.Info("sender pattern requires client-side filtering", "pattern", opts.SenderFilter)
+		}
 	}
 
 	var sinceTime time.Time
