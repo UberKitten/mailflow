@@ -23,7 +23,6 @@ var resortCmd = &cobra.Command{
 
 func init() {
 	resortCmd.Flags().Bool("dry-run", false, "preview moves without applying")
-	resortCmd.Flags().Bool("apply", false, "apply moves")
 	resortCmd.Flags().Bool("recursive", false, "scan subfolders recursively")
 	resortCmd.Flags().Duration("since", 0, "only process messages received since duration")
 	resortCmd.Flags().Bool("fast", true, "skip body-based rules (use --fast=false to enable)")
@@ -34,20 +33,12 @@ func init() {
 func runResort(cmd *cobra.Command, args []string) error {
 	var folder string
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
-	apply, _ := cmd.Flags().GetBool("apply")
 	recursive, _ := cmd.Flags().GetBool("recursive")
 	since, _ := cmd.Flags().GetDuration("since")
 	fast, _ := cmd.Flags().GetBool("fast")
 	resume, _ := cmd.Flags().GetBool("resume")
 	checkpointPath, _ := cmd.Flags().GetString("checkpoint-path")
 	cfgDir, _ := cmd.Root().Flags().GetString("config-dir")
-
-	if !dryRun && !apply {
-		return errors.New("must specify --dry-run or --apply")
-	}
-	if dryRun && apply {
-		return errors.New("cannot use --dry-run and --apply together")
-	}
 
 	if resume {
 		if len(args) > 0 {
