@@ -26,7 +26,7 @@ func init() {
 	resortCmd.Flags().Bool("apply", false, "apply moves")
 	resortCmd.Flags().Bool("recursive", false, "scan subfolders recursively")
 	resortCmd.Flags().Duration("since", 0, "only process messages received since duration")
-	resortCmd.Flags().Bool("fast", false, "skip body-based rules and fetch minimal fields")
+	resortCmd.Flags().Bool("fast", true, "skip body-based rules (use --fast=false to enable)")
 	resortCmd.Flags().Bool("resume", false, "resume from last resort checkpoint")
 	resortCmd.Flags().String("checkpoint-path", "", "override resort checkpoint path")
 }
