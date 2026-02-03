@@ -467,12 +467,15 @@ func (c *Client) StreamMessages(ctx context.Context, folderID string, opts ListO
 		}
 
 		ranges := buildDateRanges(start, end, c.rangeDays)
-		results := make([][]Message, len(ranges))
+		resultsCh := make(chan []Message, c.rangeWorkers)
+		errCh := make(chan error, 1)
+
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
 
 		g, gctx := errgroup.WithContext(ctx)
 		sem := make(chan struct{}, c.rangeWorkers)
-		for i, r := range ranges {
-			i := i
+		for _, r := range ranges {
 			r := r
 			g.Go(func() error {
 				sem <- struct{}{}
@@ -481,19 +484,30 @@ func (c *Client) StreamMessages(ctx context.Context, folderID string, opts ListO
 				if err != nil {
 					return err
 				}
-				results[i] = msgs
-				return nil
+				select {
+				case resultsCh <- msgs:
+					return nil
+				case <-gctx.Done():
+					return gctx.Err()
+				}
 			})
 		}
-		if err := g.Wait(); err != nil {
-			return err
-		}
-		for _, msgs := range results {
+
+		go func() {
+			errCh <- g.Wait()
+			close(resultsCh)
+		}()
+
+		for msgs := range resultsCh {
 			for _, msg := range msgs {
 				if err := fn(msg); err != nil {
+					cancel()
 					return err
 				}
 			}
+		}
+		if err := <-errCh; err != nil {
+			return err
 		}
 		return nil
 	}
