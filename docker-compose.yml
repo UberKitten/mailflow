@@ -2,9 +2,9 @@ services:
   mailflow:
     build: .
     container_name: mailflow
-    restart: unless-stopped
+    restart: always
     volumes:
-      - ${APPDATA_PATH:-/home/apps/.config/appdata}/mailflow:/config
+      - ./config:/config
       - ./token-script.sh:/app/token-script/token-script.sh:ro
     environment:
       - TZ=${TZ:-America/Los_Angeles}
