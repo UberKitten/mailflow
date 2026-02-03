@@ -503,6 +503,32 @@ func TestMatchFromDomainExtraction(t *testing.T) {
 	}
 }
 
+// TestMatchFromDomainCaseInsensitive verifies domains match case-insensitively per RFC 1035
+func TestMatchFromDomainCaseInsensitive(t *testing.T) {
+	rules := &config.RuleSet{Rules: []config.Rule{
+		{Name: "lowercase-rule", FromDomain: []string{"rxlocal.com"}},
+	}}
+
+	cases := []struct {
+		from string
+		want bool
+	}{
+		{"user@rxlocal.com", true},
+		{"user@RxLocal.com", true},   // Mixed case domain should match
+		{"user@RXLOCAL.COM", true},   // All caps should match
+		{"user@RxLocal.COM", true},   // Mixed case should match
+		{"user@other.com", false},
+	}
+
+	for _, tc := range cases {
+		msg := graph.Message{From: tc.from}
+		got := Match(rules, msg, MatchOptions{}) != nil
+		if got != tc.want {
+			t.Errorf("from %q: got match=%v, want match=%v", tc.from, got, tc.want)
+		}
+	}
+}
+
 // --- Wildcard pattern tests ---
 
 func TestMatchWildcardPatterns(t *testing.T) {

@@ -99,7 +99,8 @@ func debugRuleMatch(rule config.Rule, msg graph.Message, opts MatchOptions) Debu
 		}
 		matched := false
 		for _, pattern := range rule.FromDomain {
-			if matchPattern(pattern, fromDomain, rule.CaseInsensitive) {
+			// Domains are always case-insensitive per RFC 1035
+			if matchPattern(pattern, fromDomain, true) {
 				matched = true
 				cond.MatchedValues = append(cond.MatchedValues, pattern)
 				break
@@ -153,7 +154,8 @@ func debugRuleMatch(rule config.Rule, msg graph.Message, opts MatchOptions) Debu
 		matched := false
 		for _, domain := range toDomains {
 			for _, pattern := range rule.ToDomain {
-				if matchPattern(pattern, domain, rule.CaseInsensitive) {
+				// Domains are always case-insensitive per RFC 1035
+				if matchPattern(pattern, domain, true) {
 					matched = true
 					cond.MatchedValues = append(cond.MatchedValues, pattern)
 					break

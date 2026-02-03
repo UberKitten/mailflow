@@ -237,7 +237,8 @@ func ruleMatches(rule config.Rule, msg graph.Message, opts MatchOptions) bool {
 	if len(rule.FromDomain) > 0 {
 		matched := false
 		for _, pattern := range rule.FromDomain {
-			if matchPattern(pattern, fromDomain, rule.CaseInsensitive) {
+			// Domains are always case-insensitive per RFC 1035
+			if matchPattern(pattern, fromDomain, true) {
 				matched = true
 				break
 			}
@@ -267,7 +268,8 @@ func ruleMatches(rule config.Rule, msg graph.Message, opts MatchOptions) bool {
 		for _, t := range toList {
 			domain := domainFromEmail(t)
 			for _, pattern := range rule.ToDomain {
-				if matchPattern(pattern, domain, rule.CaseInsensitive) {
+				// Domains are always case-insensitive per RFC 1035
+				if matchPattern(pattern, domain, true) {
 					matched = true
 					break
 				}
