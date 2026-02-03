@@ -225,6 +225,7 @@ type RuleSet struct {
 // Rule definition.
 type Rule struct {
 	Name               string
+	Source             string
 	Folder             string
 	From               []string
 	To                 []string
@@ -427,6 +428,7 @@ func loadRules(configDir string, cfg *Config, senders map[string]SenderList) (*R
 			ruleset.Folders[key] = folder.Path
 			for _, rule := range folder.Rules {
 				rule.Folder = folder.Path
+				rule.Source = filepath.Base(path)
 				if err := resolveRefs(&rule, senders); err != nil {
 					return nil, fmt.Errorf("rules file %s: %w", path, err)
 				}
@@ -439,6 +441,7 @@ func loadRules(configDir string, cfg *Config, senders map[string]SenderList) (*R
 			if rule.Folder == "" {
 				return nil, fmt.Errorf("rules file %s: rule missing folder", path)
 			}
+			rule.Source = filepath.Base(path)
 			if err := resolveRefs(&rule, senders); err != nil {
 				return nil, fmt.Errorf("rules file %s: %w", path, err)
 			}
