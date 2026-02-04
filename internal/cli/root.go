@@ -41,6 +41,15 @@ func initLogging() {
 }
 
 func defaultConfigDir() string {
+	// Check env var first
+	if dir := os.Getenv("MAILFLOW_CONFIG_DIR"); dir != "" {
+		return dir
+	}
+	// Check if ./config exists (running from repo)
+	if info, err := os.Stat("./config"); err == nil && info.IsDir() {
+		return "./config"
+	}
+	// Fall back to home dir
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "."
