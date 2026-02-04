@@ -28,6 +28,7 @@ var knownWebhookKeys = map[string]bool{
 	"enabled": true, "port": true, "path": true, "external_url": true,
 	"state_file": true, "watch_folder": true, "poll_interval_seconds": true,
 	"retry_interval_seconds": true, "startup_resort": true,
+	"sweep_folder": true, "sweep_interval_seconds": true,
 }
 
 // knownProcessKeys are the valid keys in the process section
@@ -188,6 +189,8 @@ type WebhookConfig struct {
 	PollIntervalSeconds  int    `yaml:"poll_interval_seconds"`
 	RetryIntervalSeconds int    `yaml:"retry_interval_seconds"`
 	StartupResort        *bool  `yaml:"startup_resort"` // resort watch folder on startup, default true
+	SweepFolder          string `yaml:"sweep_folder"`   // folder to periodically sweep, default "Unsorted"
+	SweepIntervalSeconds int    `yaml:"sweep_interval_seconds"` // sweep interval, default 60
 }
 
 type GraphConfig struct {
@@ -340,6 +343,12 @@ func loadMainConfig(configDir string) (*Config, error) {
 	}
 	if cfg.Webhook.RetryIntervalSeconds == 0 {
 		cfg.Webhook.RetryIntervalSeconds = 300
+	}
+	if cfg.Webhook.SweepFolder == "" {
+		cfg.Webhook.SweepFolder = "Unsorted"
+	}
+	if cfg.Webhook.SweepIntervalSeconds == 0 {
+		cfg.Webhook.SweepIntervalSeconds = 60
 	}
 
 	return &cfg, nil

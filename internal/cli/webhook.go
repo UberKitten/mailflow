@@ -203,6 +203,53 @@ func runWebhook(cmd *cobra.Command, args []string) error {
 		slog.Info("startup resort complete", "processed", report.Total, "moved", report.Moved)
 	}
 
+	// Periodic sweep of a folder (catches dropped webhook notifications)
+	sweepInterval := time.Duration(cfg.Webhook.SweepIntervalSeconds) * time.Second
+	sweepFolder := cfg.Webhook.SweepFolder
+
+	startSweep := func() {
+		slog.Info("starting periodic sweep", "folder", sweepFolder, "interval", sweepInterval)
+		go func() {
+			// Initial sweep on startup
+			sweepCtx, sweepCancel := context.WithTimeout(ctx, 5*time.Minute)
+			report, err := eng.Resort(sweepCtx, sweepFolder, engine.ResortOptions{
+				Fast:   true,
+				DryRun: false,
+			})
+			sweepCancel()
+			if err != nil {
+				slog.Error("initial sweep failed", "folder", sweepFolder, "error", err)
+			} else if report.Moved > 0 {
+				slog.Info("initial sweep complete", "folder", sweepFolder, "processed", report.Total, "moved", report.Moved)
+			}
+
+			ticker := time.NewTicker(sweepInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					sweepCtx, sweepCancel := context.WithTimeout(ctx, 5*time.Minute)
+					report, err := eng.Resort(sweepCtx, sweepFolder, engine.ResortOptions{
+						Fast:   true,
+						DryRun: false,
+					})
+					sweepCancel()
+					if err != nil {
+						if !errors.Is(err, context.Canceled) {
+							slog.Error("sweep failed", "folder", sweepFolder, "error", err)
+						}
+						continue
+					}
+					if report.Moved > 0 {
+						slog.Info("sweep complete", "folder", sweepFolder, "processed", report.Total, "moved", report.Moved)
+					}
+				}
+			}
+		}()
+	}
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM)
 
@@ -232,6 +279,9 @@ func runWebhook(cmd *cobra.Command, args []string) error {
 
 	// Start renewal loop
 	go subMgr.StartRenewalLoop(ctx)
+
+	// Start periodic sweep (runs regardless of webhook subscription status)
+	startSweep()
 
 	// Now create subscription (server is ready to handle validation)
 	slog.Info("creating Graph subscription", "url", cfg.Webhook.ExternalURL)
