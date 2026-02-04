@@ -812,6 +812,41 @@ func (c *Client) GetMessage(ctx context.Context, msgID string) (*Message, error)
 	return &msg, nil
 }
 
+// GetMessageByInternetMessageID finds a message by its RFC 5322 Message-ID header.
+// The messageID should include angle brackets, e.g. "<abc123@example.com>"
+func (c *Client) GetMessageByInternetMessageID(ctx context.Context, messageID string) (*Message, error) {
+	params := url.Values{}
+	params.Set("$select", "id,subject,from,toRecipients,body,bodyPreview,isRead,receivedDateTime,parentFolderId,internetMessageId")
+	params.Set("$filter", fmt.Sprintf("internetMessageId eq '%s'", messageID))
+	params.Set("$top", "1")
+	endpoint := fmt.Sprintf("%s/me/messages?%s", c.baseURL, params.Encode())
+
+	resp, err := c.doWithRetry(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("search by internetMessageId failed: %s - %s", resp.Status, string(body))
+	}
+
+	var result struct {
+		Value []graphMessage `json:"value"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+
+	if len(result.Value) == 0 {
+		return nil, fmt.Errorf("message not found with internetMessageId: %s", messageID)
+	}
+
+	msg := toMessage(result.Value[0])
+	return &msg, nil
+}
+
 // GetMessageFolder returns the folder ID containing the message
 func (c *Client) GetMessageFolder(ctx context.Context, msgID string) (string, error) {
 	params := url.Values{}

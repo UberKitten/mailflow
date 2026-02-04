@@ -40,7 +40,18 @@ func runDebugEmail(cmd *cobra.Command, args []string) error {
 	env := engine.New(cfg, rules, client)
 	ctx := context.Background()
 
-	msg, err := client.GetMessage(ctx, msgID)
+	// Detect if this is an RFC 5322 Message-ID (contains @ or angle brackets)
+	// vs a Graph API message ID
+	var msg *graph.Message
+	if strings.Contains(msgID, "@") || strings.HasPrefix(msgID, "<") {
+		// Ensure angle brackets are present
+		if !strings.HasPrefix(msgID, "<") {
+			msgID = "<" + msgID + ">"
+		}
+		msg, err = client.GetMessageByInternetMessageID(ctx, msgID)
+	} else {
+		msg, err = client.GetMessage(ctx, msgID)
+	}
 	if err != nil {
 		return err
 	}
