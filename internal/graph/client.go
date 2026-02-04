@@ -886,3 +886,45 @@ func (c *Client) MarkRead(ctx context.Context, msgID string) error {
 	}
 	return nil
 }
+
+// FlagMessage sets the follow-up flag on a message.
+// status can be: "flagged", "complete", or "notFlagged"
+func (c *Client) FlagMessage(ctx context.Context, msgID string, status string) error {
+	payload := map[string]interface{}{
+		"flag": map[string]string{
+			"flagStatus": status,
+		},
+	}
+	buf, _ := json.Marshal(payload)
+	endpoint := fmt.Sprintf("%s/me/messages/%s", c.baseURL, msgID)
+	resp, err := c.doWithRetry(ctx, http.MethodPatch, endpoint, bytes.NewReader(buf))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("flag message failed: %s - %s", resp.Status, string(body))
+	}
+	return nil
+}
+
+// SetCategories sets the categories on a message.
+// Categories are colored labels in Outlook (e.g., "Red Category", "Blue Category", or custom names).
+func (c *Client) SetCategories(ctx context.Context, msgID string, categories []string) error {
+	payload := map[string]interface{}{
+		"categories": categories,
+	}
+	buf, _ := json.Marshal(payload)
+	endpoint := fmt.Sprintf("%s/me/messages/%s", c.baseURL, msgID)
+	resp, err := c.doWithRetry(ctx, http.MethodPatch, endpoint, bytes.NewReader(buf))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("set categories failed: %s - %s", resp.Status, string(body))
+	}
+	return nil
+}

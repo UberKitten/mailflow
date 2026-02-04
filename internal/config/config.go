@@ -69,7 +69,7 @@ var knownRuleKeys = map[string]bool{
 
 // knownOnMatchKeys are the valid keys in on_match blocks
 var knownOnMatchKeys = map[string]bool{
-	"mark_read": true, "pushover": true,
+	"mark_read": true, "pushover": true, "flag": true, "categories": true,
 }
 
 // knownPushoverRuleKeys are the valid keys in pushover rule blocks
@@ -249,8 +249,71 @@ type Rule struct {
 }
 
 type OnMatch struct {
-	MarkRead bool          `yaml:"mark_read"`
-	Pushover *PushoverRule `yaml:"pushover"`
+	MarkRead   bool          `yaml:"mark_read"`
+	Pushover   *PushoverRule `yaml:"pushover"`
+	Flag       string        // "flagged", "complete", "notFlagged" (parsed from bool or string)
+	Categories []string      `yaml:"categories"` // Outlook categories (colored labels)
+}
+
+// UnmarshalYAML handles flag being either bool or string
+func (o *OnMatch) UnmarshalYAML(value *yaml.Node) error {
+	// First decode into a map to handle mixed types
+	var raw map[string]*yaml.Node
+	if err := value.Decode(&raw); err != nil {
+		return err
+	}
+
+	if node, ok := raw["mark_read"]; ok {
+		_ = node.Decode(&o.MarkRead)
+	}
+
+	if node, ok := raw["pushover"]; ok {
+		var p PushoverRule
+		if err := node.Decode(&p); err != nil {
+			return err
+		}
+		o.Pushover = &p
+	}
+
+	if node, ok := raw["flag"]; ok {
+		// Handle both bool and string
+		switch node.Kind {
+		case yaml.ScalarNode:
+			if node.Tag == "!!bool" {
+				var b bool
+				if err := node.Decode(&b); err != nil {
+					return err
+				}
+				if b {
+					o.Flag = "flagged"
+				}
+				// false means don't flag, leave empty
+			} else {
+				// String value
+				if err := node.Decode(&o.Flag); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	if node, ok := raw["categories"]; ok {
+		// Handle single string or array
+		switch node.Kind {
+		case yaml.ScalarNode:
+			var s string
+			if err := node.Decode(&s); err != nil {
+				return err
+			}
+			o.Categories = []string{s}
+		case yaml.SequenceNode:
+			if err := node.Decode(&o.Categories); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }
 
 type PushoverRule struct {

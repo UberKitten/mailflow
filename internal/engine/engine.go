@@ -85,16 +85,7 @@ func (e *Engine) ProcessOnce(ctx context.Context, since time.Duration) error {
 		}
 		slog.Info("moved", "id", msg.ID, "from", msg.From, "subject", msg.Subject, "rule", rule.Name, "folder", rule.Folder)
 
-		if rule.OnMatch != nil {
-			if rule.OnMatch.MarkRead {
-				if err := e.client.MarkRead(ctx, msg.ID); err != nil {
-					slog.Warn("mark read failed", "id", msg.ID, "error", err)
-				}
-			}
-			if rule.OnMatch.Pushover != nil {
-				e.sendPushover(msg, rule)
-			}
-		}
+		e.executeOnMatch(ctx, msg.ID, msg, rule)
 	}
 
 	return nil
@@ -155,16 +146,7 @@ func (e *Engine) ProcessSingle(ctx context.Context, messageID string) error {
 	slog.Info("moved", "id", messageID, "from", msg.From, "subject", msg.Subject, "rule", rule.Name, "folder", rule.Folder)
 
 	// Execute on_match actions
-	if rule.OnMatch != nil {
-		if rule.OnMatch.MarkRead {
-			if err := e.client.MarkRead(ctx, messageID); err != nil {
-				slog.Warn("mark read failed", "id", messageID, "error", err)
-			}
-		}
-		if rule.OnMatch.Pushover != nil {
-			e.sendPushover(*msg, rule)
-		}
-	}
+	e.executeOnMatch(ctx, messageID, *msg, rule)
 
 	return nil
 }
@@ -181,6 +163,39 @@ func (e *Engine) sendPushover(msg graph.Message, rule *config.Rule) {
 
 	if err := pushover.Send(payload); err != nil {
 		slog.Warn("pushover send failed", "error", err)
+	}
+}
+
+// executeOnMatch runs all on_match actions for a rule
+func (e *Engine) executeOnMatch(ctx context.Context, msgID string, msg graph.Message, rule *config.Rule) {
+	if rule.OnMatch == nil {
+		return
+	}
+
+	if rule.OnMatch.MarkRead {
+		if err := e.client.MarkRead(ctx, msgID); err != nil {
+			slog.Warn("mark read failed", "id", msgID, "error", err)
+		}
+	}
+
+	if rule.OnMatch.Flag != "" {
+		if err := e.client.FlagMessage(ctx, msgID, rule.OnMatch.Flag); err != nil {
+			slog.Warn("flag message failed", "id", msgID, "flag", rule.OnMatch.Flag, "error", err)
+		} else {
+			slog.Debug("flagged message", "id", msgID, "flag", rule.OnMatch.Flag)
+		}
+	}
+
+	if len(rule.OnMatch.Categories) > 0 {
+		if err := e.client.SetCategories(ctx, msgID, rule.OnMatch.Categories); err != nil {
+			slog.Warn("set categories failed", "id", msgID, "categories", rule.OnMatch.Categories, "error", err)
+		} else {
+			slog.Debug("set categories", "id", msgID, "categories", rule.OnMatch.Categories)
+		}
+	}
+
+	if rule.OnMatch.Pushover != nil {
+		e.sendPushover(msg, rule)
 	}
 }
 
