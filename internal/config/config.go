@@ -251,64 +251,46 @@ type Rule struct {
 type OnMatch struct {
 	MarkRead   bool          `yaml:"mark_read"`
 	Pushover   *PushoverRule `yaml:"pushover"`
-	Flag       string        // "flagged", "complete", "notFlagged" (parsed from bool or string)
-	Categories []string      `yaml:"categories"` // Outlook categories (colored labels)
+	Flag       string        `yaml:"-"` // "flagged", "complete", "notFlagged" (parsed from bool or string)
+	Categories []string      `yaml:"-"` // Outlook categories (colored labels)
 }
 
-// UnmarshalYAML handles flag being either bool or string
+// onMatchRaw is used for initial YAML unmarshaling
+type onMatchRaw struct {
+	MarkRead   bool          `yaml:"mark_read"`
+	Pushover   *PushoverRule `yaml:"pushover"`
+	Flag       interface{}   `yaml:"flag"`
+	Categories interface{}   `yaml:"categories"`
+}
+
+// UnmarshalYAML handles flag being either bool or string, and categories being string or array
 func (o *OnMatch) UnmarshalYAML(value *yaml.Node) error {
-	// First decode into a map to handle mixed types
-	var raw map[string]*yaml.Node
+	var raw onMatchRaw
 	if err := value.Decode(&raw); err != nil {
 		return err
 	}
 
-	if node, ok := raw["mark_read"]; ok {
-		_ = node.Decode(&o.MarkRead)
-	}
+	o.MarkRead = raw.MarkRead
+	o.Pushover = raw.Pushover
 
-	if node, ok := raw["pushover"]; ok {
-		var p PushoverRule
-		if err := node.Decode(&p); err != nil {
-			return err
+	// Handle flag (bool or string)
+	switch v := raw.Flag.(type) {
+	case bool:
+		if v {
+			o.Flag = "flagged"
 		}
-		o.Pushover = &p
+	case string:
+		o.Flag = v
 	}
 
-	if node, ok := raw["flag"]; ok {
-		// Handle both bool and string
-		switch node.Kind {
-		case yaml.ScalarNode:
-			if node.Tag == "!!bool" {
-				var b bool
-				if err := node.Decode(&b); err != nil {
-					return err
-				}
-				if b {
-					o.Flag = "flagged"
-				}
-				// false means don't flag, leave empty
-			} else {
-				// String value
-				if err := node.Decode(&o.Flag); err != nil {
-					return err
-				}
-			}
-		}
-	}
-
-	if node, ok := raw["categories"]; ok {
-		// Handle single string or array
-		switch node.Kind {
-		case yaml.ScalarNode:
-			var s string
-			if err := node.Decode(&s); err != nil {
-				return err
-			}
-			o.Categories = []string{s}
-		case yaml.SequenceNode:
-			if err := node.Decode(&o.Categories); err != nil {
-				return err
+	// Handle categories (string or []string)
+	switch v := raw.Categories.(type) {
+	case string:
+		o.Categories = []string{v}
+	case []interface{}:
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				o.Categories = append(o.Categories, s)
 			}
 		}
 	}
