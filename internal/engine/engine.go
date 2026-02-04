@@ -52,6 +52,11 @@ func (e *Engine) Reload(cfg *config.Config, rules *config.RuleSet) error {
 	return nil
 }
 
+// Rules returns the current ruleset
+func (e *Engine) Rules() *config.RuleSet {
+	return e.rules
+}
+
 func (e *Engine) ProcessOnce(ctx context.Context, since time.Duration) error {
 	inboxID, err := e.client.FindFolderIDByPath(ctx, "Inbox")
 	if err != nil {
@@ -85,7 +90,7 @@ func (e *Engine) ProcessOnce(ctx context.Context, since time.Duration) error {
 		}
 		slog.Info("moved", "id", msg.ID, "from", msg.From, "subject", msg.Subject, "rule", rule.Name, "folder", rule.Folder)
 
-		e.executeOnMatch(ctx, msg.ID, msg, rule)
+		e.executeOnMatch(ctx, msg.ID, msg, rule, OnMatchOptions{AllowPushover: true})
 	}
 
 	return nil
@@ -146,7 +151,7 @@ func (e *Engine) ProcessSingle(ctx context.Context, messageID string) error {
 	slog.Info("moved", "id", messageID, "from", msg.From, "subject", msg.Subject, "rule", rule.Name, "folder", rule.Folder)
 
 	// Execute on_match actions
-	e.executeOnMatch(ctx, messageID, *msg, rule)
+	e.executeOnMatch(ctx, messageID, *msg, rule, OnMatchOptions{AllowPushover: true})
 
 	return nil
 }
@@ -166,8 +171,18 @@ func (e *Engine) sendPushover(msg graph.Message, rule *config.Rule) {
 	}
 }
 
+// OnMatchOptions controls behavior for on_match actions.
+type OnMatchOptions struct {
+	AllowPushover bool
+}
+
+// ApplyOnMatch runs on_match actions for a rule with options.
+func (e *Engine) ApplyOnMatch(ctx context.Context, msgID string, msg graph.Message, rule *config.Rule, opts OnMatchOptions) {
+	e.executeOnMatch(ctx, msgID, msg, rule, opts)
+}
+
 // executeOnMatch runs all on_match actions for a rule
-func (e *Engine) executeOnMatch(ctx context.Context, msgID string, msg graph.Message, rule *config.Rule) {
+func (e *Engine) executeOnMatch(ctx context.Context, msgID string, msg graph.Message, rule *config.Rule, opts OnMatchOptions) {
 	if rule.OnMatch == nil {
 		return
 	}
@@ -194,7 +209,7 @@ func (e *Engine) executeOnMatch(ctx context.Context, msgID string, msg graph.Mes
 		}
 	}
 
-	if rule.OnMatch.Pushover != nil {
+	if opts.AllowPushover && rule.OnMatch.Pushover != nil {
 		e.sendPushover(msg, rule)
 	}
 }
