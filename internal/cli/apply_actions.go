@@ -70,9 +70,18 @@ func runApplyActions(cmd *cobra.Command, args []string) error {
 			return nil
 		}
 
+		// Process notify_only rules first (they don't prevent other rules from matching)
+		if allowPushover {
+			notifyRules := engine.MatchNotifyOnly(env.Rules(), *msg)
+			for _, notifyRule := range notifyRules {
+				env.ApplyOnMatch(ctx, msg.ID, *msg, notifyRule, engine.OnMatchOptions{AllowPushover: true})
+				fmt.Printf("applied notify_only actions: %q from %s (rule: %s)\n", msg.Subject, msg.From, notifyRule.Name)
+			}
+		}
+
 		rule := selectRuleForMessage(env, msg, ruleName, fast)
 		if rule == nil {
-			fmt.Println("no rule matched")
+			fmt.Println("no sorting rule matched")
 			return nil
 		}
 
