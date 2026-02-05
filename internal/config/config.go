@@ -65,6 +65,7 @@ var knownRuleKeys = map[string]bool{
 	"body_prefix_contains": true, "body_prefix_length": true,
 	"subject_not_contains": true, "body_not_contains": true,
 	"case_insensitive": true, "catchall": true, "on_match": true,
+	"notify_only": true,
 }
 
 // knownOnMatchKeys are the valid keys in on_match blocks
@@ -75,6 +76,7 @@ var knownOnMatchKeys = map[string]bool{
 // knownPushoverRuleKeys are the valid keys in pushover rule blocks
 var knownPushoverRuleKeys = map[string]bool{
 	"title": true, "message": true, "fallback": true, "extract": true,
+	"url": true, "url_title": true, "html": true, "priority": true, "sound": true,
 }
 
 // knownExtractPatternKeys are the valid keys in extract pattern blocks
@@ -242,6 +244,7 @@ type Rule struct {
 	BodyPrefixLength   int
 	CaseInsensitive    bool
 	Catchall           bool
+	NotifyOnly         bool
 	OnMatch            *OnMatch
 
 	fromDomainRefs []string
@@ -303,6 +306,11 @@ type PushoverRule struct {
 	Message  string           `yaml:"message"`
 	Fallback string           `yaml:"fallback"`
 	Extract  []ExtractPattern `yaml:"extract"`
+	URL      string           `yaml:"url"`
+	URLTitle string           `yaml:"url_title"`
+	HTML     int              `yaml:"html"`
+	Priority int              `yaml:"priority"`
+	Sound    string           `yaml:"sound"`
 }
 
 type ExtractPattern struct {
@@ -490,9 +498,9 @@ func loadRules(configDir string, cfg *Config, senders map[string]SenderList) (*R
 			}
 		}
 
-		// Flat rules (must include folder)
+		// Flat rules (must include folder, unless notify_only)
 		for _, rule := range rf.Rules {
-			if rule.Folder == "" {
+			if rule.Folder == "" && !rule.NotifyOnly {
 				return nil, fmt.Errorf("rules file %s: rule missing folder", path)
 			}
 			rule.Source = filepath.Base(path)
@@ -669,6 +677,9 @@ func (r *Rule) UnmarshalYAML(value *yaml.Node) error {
 	}
 	if node, ok := raw["catchall"]; ok {
 		_ = node.Decode(&r.Catchall)
+	}
+	if node, ok := raw["notify_only"]; ok {
+		_ = node.Decode(&r.NotifyOnly)
 	}
 	if node, ok := raw["on_match"]; ok {
 		var onMatch OnMatch

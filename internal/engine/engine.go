@@ -72,6 +72,14 @@ func (e *Engine) ProcessOnce(ctx context.Context, since time.Duration) error {
 	}
 
 	for _, msg := range msgs {
+		// First, process all matching notify_only rules (they don't move messages)
+		notifyRules := MatchNotifyOnly(e.rules, msg)
+		for _, notifyRule := range notifyRules {
+			slog.Info("notify_only matched", "id", msg.ID, "from", msg.From, "subject", msg.Subject, "rule", notifyRule.Name)
+			e.executeOnMatch(ctx, msg.ID, msg, notifyRule, OnMatchOptions{AllowPushover: true})
+		}
+
+		// Then find the sorting rule
 		rule := Match(e.rules, msg, MatchOptions{})
 		if rule == nil {
 			continue
@@ -127,7 +135,14 @@ func (e *Engine) ProcessSingle(ctx context.Context, messageID string) error {
 		return fmt.Errorf("get message: %w", err)
 	}
 
-	// Match against rules
+	// First, process all matching notify_only rules (they don't move messages)
+	notifyRules := MatchNotifyOnly(e.rules, *msg)
+	for _, notifyRule := range notifyRules {
+		slog.Info("notify_only matched", "id", messageID, "from", msg.From, "subject", msg.Subject, "rule", notifyRule.Name)
+		e.executeOnMatch(ctx, messageID, *msg, notifyRule, OnMatchOptions{AllowPushover: true})
+	}
+
+	// Match against sorting rules
 	rule := Match(e.rules, *msg, MatchOptions{})
 	if rule == nil {
 		slog.Debug("no rule matched", "messageId", messageID, "from", msg.From, "subject", msg.Subject)
@@ -227,11 +242,31 @@ func Match(rules *config.RuleSet, msg graph.Message, opts MatchOptions) *config.
 		if opts.IgnoreCatchall && rule.Catchall {
 			continue
 		}
+		// Skip notify_only rules - they don't move messages
+		if rule.NotifyOnly {
+			continue
+		}
 		if ruleMatches(*rule, msg, opts) {
 			return rule
 		}
 	}
 	return nil
+}
+
+// MatchNotifyOnly returns all matching notify_only rules for a message.
+// These rules trigger on_match actions but don't prevent other rules from matching.
+func MatchNotifyOnly(rules *config.RuleSet, msg graph.Message) []*config.Rule {
+	var matches []*config.Rule
+	for i := range rules.Rules {
+		rule := &rules.Rules[i]
+		if !rule.NotifyOnly {
+			continue
+		}
+		if ruleMatches(*rule, msg, MatchOptions{}) {
+			matches = append(matches, rule)
+		}
+	}
+	return matches
 }
 
 func ruleMatches(rule config.Rule, msg graph.Message, opts MatchOptions) bool {
@@ -460,15 +495,17 @@ func MatchSender(pattern, email string) bool {
 // BuildPushover extracts data and builds payload.
 func BuildPushover(cfg *config.PushoverRule, msg graph.Message) pushover.Payload {
 	vars := map[string]string{
-		"subject":   msg.Subject,
-		"from":      msg.From,
-		"from_name": msg.FromName,
-		"to":        strings.Join(msg.To, ","),
-		"snippet":   msg.Snippet,
-		"body":      msg.Body,
-		"body_html": msg.BodyHTML,
+		"subject":    msg.Subject,
+		"from":       msg.From,
+		"from_name":  msg.FromName,
+		"to":         strings.Join(msg.To, ","),
+		"snippet":    msg.Snippet,
+		"body":       msg.Body,
+		"body_html":  msg.BodyHTML,
+		"message_id": msg.ID,
 	}
 
+	// Try all extract patterns and accumulate results
 	for _, extract := range cfg.Extract {
 		re, err := regexp.Compile(extract.Pattern)
 		if err != nil {
@@ -494,8 +531,6 @@ func BuildPushover(cfg *config.PushoverRule, msg graph.Message) pushover.Payload
 				vars[name] = matches[i]
 			}
 		}
-		// Use first successful extraction
-		break
 	}
 
 	message := cfg.Message
@@ -508,8 +543,13 @@ func BuildPushover(cfg *config.PushoverRule, msg graph.Message) pushover.Payload
 	}
 
 	return pushover.Payload{
-		Title:   expandVars(cfg.Title, vars),
-		Message: expandVars(message, vars),
+		Title:    expandVars(cfg.Title, vars),
+		Message:  expandVars(message, vars),
+		URL:      expandVars(cfg.URL, vars),
+		URLTitle: expandVars(cfg.URLTitle, vars),
+		HTML:     cfg.HTML,
+		Priority: cfg.Priority,
+		Sound:    cfg.Sound,
 	}
 }
 

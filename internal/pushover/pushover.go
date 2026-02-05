@@ -10,10 +10,15 @@ import (
 const endpoint = "https://api.pushover.net/1/messages.json"
 
 type Payload struct {
-	Token   string `json:"token"`
-	User    string `json:"user"`
-	Title   string `json:"title,omitempty"`
-	Message string `json:"message"`
+	Token    string `json:"token"`
+	User     string `json:"user"`
+	Title    string `json:"title,omitempty"`
+	Message  string `json:"message"`
+	URL      string `json:"url,omitempty"`
+	URLTitle string `json:"url_title,omitempty"`
+	HTML     int    `json:"html,omitempty"`
+	Priority int    `json:"priority,omitempty"`
+	Sound    string `json:"sound,omitempty"`
 }
 
 func Send(payload Payload) error {
