@@ -181,6 +181,8 @@ func (e *Engine) sendPushover(msg graph.Message, rule *config.Rule) {
 	payload.Token = e.cfg.Pushover.Token
 	payload.User = e.cfg.Pushover.User
 
+	slog.Info("pushover sending", "title", payload.Title, "message", payload.Message, "url", payload.URL)
+
 	if err := pushover.Send(payload); err != nil {
 		slog.Warn("pushover send failed", "error", err)
 	}
