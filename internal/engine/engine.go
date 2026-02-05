@@ -505,7 +505,7 @@ func BuildPushover(cfg *config.PushoverRule, msg graph.Message) pushover.Payload
 		"message_id": msg.ID,
 	}
 
-	// Try all extract patterns and accumulate results
+	// Try all extract patterns, but only set each capture name once (first match wins)
 	for _, extract := range cfg.Extract {
 		re, err := regexp.Compile(extract.Pattern)
 		if err != nil {
@@ -520,7 +520,8 @@ func BuildPushover(cfg *config.PushoverRule, msg graph.Message) pushover.Payload
 		}
 
 		if extract.Capture != "" {
-			if len(matches) > 1 {
+			// Only set if not already captured (first match wins)
+			if _, exists := vars[extract.Capture]; !exists && len(matches) > 1 {
 				vars[extract.Capture] = matches[1]
 			}
 		} else {
@@ -528,7 +529,10 @@ func BuildPushover(cfg *config.PushoverRule, msg graph.Message) pushover.Payload
 				if i == 0 || name == "" {
 					continue
 				}
-				vars[name] = matches[i]
+				// Only set if not already captured (first match wins)
+				if _, exists := vars[name]; !exists {
+					vars[name] = matches[i]
+				}
 			}
 		}
 	}
