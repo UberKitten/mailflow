@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -60,6 +61,16 @@ func runApplyActions(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 
 	if messageID != "" {
+		// Show note about new command
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "┌─────────────────────────────────────────────────────────────┐")
+		fmt.Fprintln(os.Stderr, "│  Note: For single emails, try 'mailflow debug <id> [verb]' │")
+		fmt.Fprintln(os.Stderr, "│                                                             │")
+		fmt.Fprintln(os.Stderr, "│    mailflow debug <id> label   # apply labels              │")
+		fmt.Fprintln(os.Stderr, "│    mailflow debug <id> notify  # test pushover             │")
+		fmt.Fprintln(os.Stderr, "└─────────────────────────────────────────────────────────────┘")
+		fmt.Fprintln(os.Stderr, "")
+
 		msg, err := getMessageByID(ctx, client, messageID)
 		if err != nil {
 			return err
