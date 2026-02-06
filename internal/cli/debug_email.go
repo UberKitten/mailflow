@@ -20,6 +20,7 @@ var debugEmailCmd = &cobra.Command{
 }
 
 func init() {
+	debugEmailCmd.Flags().Bool("apply", false, "actually move the email (not just debug)")
 	rootCmd.AddCommand(debugEmailCmd)
 }
 
@@ -109,8 +110,17 @@ func runDebugEmail(cmd *cobra.Command, args []string) error {
 		fmt.Println()
 	}
 
+	apply, _ := cmd.Flags().GetBool("apply")
+
 	if result.MatchedRule != nil {
-		fmt.Printf("Result: Would move to %s (rule: %s)\n", result.MatchedRule.Folder, result.MatchedRule.Source)
+		if apply {
+			if err := env.ProcessSingle(ctx, msg.ID); err != nil {
+				return fmt.Errorf("failed to move: %w", err)
+			}
+			fmt.Printf("Result: Moved to %s (rule: %s)\n", result.MatchedRule.Folder, result.MatchedRule.Source)
+		} else {
+			fmt.Printf("Result: Would move to %s (rule: %s)\n", result.MatchedRule.Folder, result.MatchedRule.Source)
+		}
 	} else {
 		fmt.Println("Result: No rule matched")
 	}
