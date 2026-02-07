@@ -77,8 +77,9 @@ fi
 mkdir -p "$TEMP_DIR"
 IMPORTED=0
 
-# Process each attachment
-echo "$ATTACHMENTS" | jq -c '.[]' | while read -r attachment; do
+# Process each attachment using array indexing (avoids subshell issues with pipe)
+for i in $(seq 0 $((ATTACHMENT_COUNT - 1))); do
+    attachment=$(echo "$ATTACHMENTS" | jq -c ".[$i]")
     NAME=$(echo "$attachment" | jq -r '.name')
     CONTENT_TYPE=$(echo "$attachment" | jq -r '.contentType // ""')
     ATTACHMENT_ID=$(echo "$attachment" | jq -r '.id')
