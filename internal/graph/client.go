@@ -764,23 +764,36 @@ func stripHTML(html string) string {
 	return re.ReplaceAllString(html, " ")
 }
 
-func (c *Client) MoveMessage(ctx context.Context, msgID, destFolderID string) error {
+// MoveMessage moves a message to a destination folder and returns the new message ID.
+// Graph API assigns a new ID to messages when they are moved.
+func (c *Client) MoveMessage(ctx context.Context, msgID, destFolderID string) (string, error) {
 	payload := map[string]string{"destinationId": destFolderID}
 	buf, _ := json.Marshal(payload)
 	endpoint := fmt.Sprintf("%s/me/messages/%s/move", c.baseURL, msgID)
 	resp, err := c.doWithRetry(ctx, http.MethodPost, endpoint, bytes.NewReader(buf))
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer resp.Body.Close()
 	// 400/404 usually means the message was deleted or moved by someone else
 	if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusNotFound {
-		return ErrMessageGone
+		return "", ErrMessageGone
 	}
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("move failed: %s", resp.Status)
+		return "", fmt.Errorf("move failed: %s", resp.Status)
 	}
-	return nil
+	// Parse response to get new message ID
+	var result struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		// If we can't parse the response, return original ID as fallback
+		return msgID, nil
+	}
+	if result.ID == "" {
+		return msgID, nil
+	}
+	return result.ID, nil
 }
 
 // GetMessage fetches a single message by ID

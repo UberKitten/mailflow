@@ -91,16 +91,18 @@ func (e *Engine) ProcessOnce(ctx context.Context, since time.Duration) error {
 		if err != nil {
 			return err
 		}
-		if err := e.client.MoveMessage(ctx, msg.ID, destID); err != nil {
+		newMsgID, err := e.client.MoveMessage(ctx, msg.ID, destID)
+		if err != nil {
 			if errors.Is(err, graph.ErrMessageGone) {
 				slog.Warn("message gone before move", "id", msg.ID, "subject", msg.Subject)
 				return nil
 			}
 			return err
 		}
-		slog.Info("moved", "id", msg.ID, "from", msg.From, "subject", msg.Subject, "rule", rule.Name, "folder", rule.Folder)
+		slog.Info("moved", "id", newMsgID, "from", msg.From, "subject", msg.Subject, "rule", rule.Name, "folder", rule.Folder)
 
-		e.executeOnMatch(ctx, msg.ID, msg, rule, OnMatchOptions{AllowPushover: true})
+		msg.ID = newMsgID
+		e.executeOnMatch(ctx, newMsgID, msg, rule, OnMatchOptions{AllowPushover: true})
 	}
 
 	return nil
@@ -157,7 +159,8 @@ func (e *Engine) ProcessSingle(ctx context.Context, messageID string) error {
 		return fmt.Errorf("find dest folder: %w", err)
 	}
 
-	if err := e.client.MoveMessage(ctx, messageID, destID); err != nil {
+	newMsgID, err := e.client.MoveMessage(ctx, messageID, destID)
+	if err != nil {
 		if errors.Is(err, graph.ErrMessageGone) {
 			slog.Warn("message gone before move", "id", messageID, "subject", msg.Subject)
 			return nil
@@ -165,10 +168,11 @@ func (e *Engine) ProcessSingle(ctx context.Context, messageID string) error {
 		return fmt.Errorf("move message: %w", err)
 	}
 
-	slog.Info("moved", "id", messageID, "from", msg.From, "subject", msg.Subject, "rule", rule.Name, "folder", rule.Folder)
+	slog.Info("moved", "id", newMsgID, "from", msg.From, "subject", msg.Subject, "rule", rule.Name, "folder", rule.Folder)
 
-	// Execute on_match actions
-	e.executeOnMatch(ctx, messageID, *msg, rule, OnMatchOptions{AllowPushover: true})
+	// Execute on_match actions with new message ID (ID changes on move in Graph API)
+	msg.ID = newMsgID
+	e.executeOnMatch(ctx, newMsgID, *msg, rule, OnMatchOptions{AllowPushover: true})
 
 	return nil
 }
@@ -952,7 +956,7 @@ func (e *Engine) Resort(ctx context.Context, folder string, opts ResortOptions) 
 
 				destID := folderCache[rule.Folder]
 				if !opts.DryRun {
-					if err := e.client.MoveMessage(gctx, msg.ID, destID); err != nil {
+					if _, err := e.client.MoveMessage(gctx, msg.ID, destID); err != nil {
 						if errors.Is(err, graph.ErrMessageGone) {
 							slog.Warn("message gone, skipping", "subject", msg.Subject, "from", msg.From)
 							return nil
@@ -1160,7 +1164,7 @@ func (e *Engine) ResortSender(ctx context.Context, folder, senderPattern string,
 
 				destID := folderCache[rule.Folder]
 				if !opts.DryRun {
-					if err := e.client.MoveMessage(gctx, msg.ID, destID); err != nil {
+					if _, err := e.client.MoveMessage(gctx, msg.ID, destID); err != nil {
 						if errors.Is(err, graph.ErrMessageGone) {
 							slog.Warn("message gone, skipping", "subject", msg.Subject, "from", msg.From)
 							return nil
