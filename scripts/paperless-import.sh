@@ -3,10 +3,22 @@
 #
 # Reads JSON from stdin with email metadata (from mailflow exec action)
 # Downloads PDF attachments via MS Graph API and copies to paperless consume folder.
+#
+# Works both inside Docker container (with mounted volumes) and locally.
 
 set -euo pipefail
 
-CONSUME_DIR="apps:~/paperless-ngx/consume/"
+# Detect environment and set paths
+if [[ -f /app/token-script/token-script.sh ]]; then
+    # Running in Docker container
+    TOKEN_SCRIPT="/app/token-script/token-script.sh"
+    CONSUME_DIR="/paperless-consume"
+else
+    # Running locally
+    TOKEN_SCRIPT="$HOME/bin/ms-graph-token.sh"
+    CONSUME_DIR="apps:~/paperless-ngx/consume/"
+fi
+
 TEMP_DIR="${TMPDIR:-/tmp}/paperless-import-$$"
 LOG_PREFIX="[paperless-import]"
 
@@ -37,7 +49,12 @@ fi
 log "Processing message: $SUBJECT (from: $FROM)"
 
 # Get Graph API token
-TOKEN=$(~/bin/ms-graph-token.sh)
+if [[ ! -x "$TOKEN_SCRIPT" ]]; then
+    log "ERROR: Token script not found or not executable: $TOKEN_SCRIPT"
+    exit 1
+fi
+
+TOKEN=$("$TOKEN_SCRIPT")
 if [[ -z "$TOKEN" ]]; then
     log "ERROR: Failed to get Graph API token"
     exit 1
@@ -89,7 +106,13 @@ echo "$ATTACHMENTS" | jq -c '.[]' | while read -r attachment; do
     
     if [[ -f "$TEMP_DIR/$NAME" && -s "$TEMP_DIR/$NAME" ]]; then
         log "Copying to paperless: $NAME"
-        scp "$TEMP_DIR/$NAME" "$CONSUME_DIR"
+        if [[ "$CONSUME_DIR" == *":"* ]]; then
+            # Remote path (scp)
+            scp "$TEMP_DIR/$NAME" "$CONSUME_DIR"
+        else
+            # Local path (direct copy)
+            cp "$TEMP_DIR/$NAME" "$CONSUME_DIR/"
+        fi
         IMPORTED=$((IMPORTED + 1))
         log "Imported: $NAME"
     else
