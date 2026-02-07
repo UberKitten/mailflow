@@ -6,13 +6,14 @@ services:
     volumes:
       - ./config:/config
       - ./token-script.sh:/app/token-script/token-script.sh:ro
+      - /home/apps/paperless-ngx/consume:/paperless-consume
     environment:
       - TZ=${TZ:-America/Los_Angeles}
     networks:
       - apps
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.mailflow.rule=Host(`mailflow.uberkitten.com`)"
+      - "traefik.http.routers.mailflow.rule=Host(\`mailflow.uberkitten.com\`)"
       - "traefik.http.routers.mailflow.entrypoints=https"
       - "traefik.http.routers.mailflow.tls=true"
       - "traefik.http.routers.mailflow.tls.certresolver=letsEncryptCloudflare"
