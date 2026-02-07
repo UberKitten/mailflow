@@ -1,12 +1,14 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"regexp"
@@ -229,6 +231,85 @@ func (e *Engine) executeOnMatch(ctx context.Context, msgID string, msg graph.Mes
 	if opts.AllowPushover && rule.OnMatch.Pushover != nil {
 		e.sendPushover(msg, rule)
 	}
+
+	if rule.OnMatch.Exec != nil {
+		e.executeExec(ctx, msg, rule.OnMatch.Exec)
+	}
+}
+
+// execPayload is the JSON payload passed to exec commands via stdin
+type execPayload struct {
+	ID             string   `json:"id"`
+	From           string   `json:"from"`
+	FromName       string   `json:"from_name"`
+	To             []string `json:"to"`
+	Subject        string   `json:"subject"`
+	Body           string   `json:"body"`
+	BodyHTML       string   `json:"body_html"`
+	Received       string   `json:"received"`
+	HasAttachments bool     `json:"has_attachments"`
+	MessageID      string   `json:"message_id"`
+}
+
+// executeExec runs a shell command with email metadata as JSON on stdin
+func (e *Engine) executeExec(ctx context.Context, msg graph.Message, execAction *config.ExecAction) {
+	timeout := execAction.Timeout
+	if timeout <= 0 {
+		timeout = 30
+	}
+
+	execCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+	defer cancel()
+
+	// Build the command
+	args := execAction.Args
+	cmd := exec.CommandContext(execCtx, execAction.Command, args...)
+
+	// Build JSON payload
+	payload := execPayload{
+		ID:             msg.ID,
+		From:           msg.From,
+		FromName:       msg.FromName,
+		To:             msg.To,
+		Subject:        msg.Subject,
+		Body:           msg.Body,
+		BodyHTML:       msg.BodyHTML,
+		Received:       msg.Received.Format(time.RFC3339),
+		HasAttachments: false, // TODO: add attachment detection if needed
+		MessageID:      msg.ID,
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		slog.Warn("exec marshal payload failed", "command", execAction.Command, "error", err)
+		return
+	}
+
+	cmd.Stdin = bytes.NewReader(jsonData)
+
+	// Capture stdout and stderr
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	slog.Info("exec running", "command", execAction.Command, "args", args, "message_id", msg.ID)
+
+	err = cmd.Run()
+	if err != nil {
+		slog.Warn("exec failed",
+			"command", execAction.Command,
+			"error", err,
+			"stdout", stdout.String(),
+			"stderr", stderr.String(),
+		)
+		return
+	}
+
+	slog.Info("exec completed",
+		"command", execAction.Command,
+		"message_id", msg.ID,
+		"stdout", strings.TrimSpace(stdout.String()),
+	)
 }
 
 // MatchOptions controls rule matching behavior.

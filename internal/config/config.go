@@ -70,7 +70,12 @@ var knownRuleKeys = map[string]bool{
 
 // knownOnMatchKeys are the valid keys in on_match blocks
 var knownOnMatchKeys = map[string]bool{
-	"mark_read": true, "pushover": true, "flag": true, "categories": true,
+	"mark_read": true, "pushover": true, "flag": true, "categories": true, "exec": true,
+}
+
+// knownExecKeys are the valid keys in exec action blocks
+var knownExecKeys = map[string]bool{
+	"command": true, "args": true, "timeout": true,
 }
 
 // knownPushoverRuleKeys are the valid keys in pushover rule blocks
@@ -256,6 +261,14 @@ type OnMatch struct {
 	Pushover   *PushoverRule `yaml:"pushover"`
 	Flag       string        `yaml:"-"` // "flagged", "complete", "notFlagged" (parsed from bool or string)
 	Categories []string      `yaml:"-"` // Outlook categories (colored labels)
+	Exec       *ExecAction   `yaml:"exec"`
+}
+
+// ExecAction defines a shell command to execute on match
+type ExecAction struct {
+	Command string   `yaml:"command"` // shell command to run
+	Args    []string `yaml:"args"`    // optional args
+	Timeout int      `yaml:"timeout"` // seconds, default 30
 }
 
 // onMatchRaw is used for initial YAML unmarshaling
@@ -264,6 +277,7 @@ type onMatchRaw struct {
 	Pushover   *PushoverRule `yaml:"pushover"`
 	Flag       interface{}   `yaml:"flag"`
 	Categories interface{}   `yaml:"categories"`
+	Exec       *ExecAction   `yaml:"exec"`
 }
 
 // UnmarshalYAML handles flag being either bool or string, and categories being string or array
@@ -275,6 +289,7 @@ func (o *OnMatch) UnmarshalYAML(value *yaml.Node) error {
 
 	o.MarkRead = raw.MarkRead
 	o.Pushover = raw.Pushover
+	o.Exec = raw.Exec
 
 	// Handle flag (bool or string)
 	switch v := raw.Flag.(type) {
@@ -719,6 +734,23 @@ func checkOnMatchKeys(node *yaml.Node) {
 		// Check pushover sub-block
 		if key == "pushover" {
 			checkPushoverRuleKeys(node.Content[i+1])
+		}
+		// Check exec sub-block
+		if key == "exec" {
+			checkExecActionKeys(node.Content[i+1])
+		}
+	}
+}
+
+// checkExecActionKeys checks for unknown keys in exec action blocks
+func checkExecActionKeys(node *yaml.Node) {
+	if node.Kind != yaml.MappingNode {
+		return
+	}
+	for i := 0; i < len(node.Content); i += 2 {
+		key := node.Content[i].Value
+		if !knownExecKeys[key] {
+			log.Printf("WARNING: unknown exec key %q (line %d)", key, node.Content[i].Line)
 		}
 	}
 }
