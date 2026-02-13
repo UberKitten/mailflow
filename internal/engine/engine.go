@@ -633,9 +633,16 @@ func BuildPushover(cfg *config.PushoverRule, msg graph.Message) pushover.Payload
 		message = "${subject}"
 	}
 
+	// Expand variables in the message. If any ${...} remain unexpanded,
+	// fall back to the fallback template (or subject).
+	expanded := expandVars(message, vars)
+	if strings.Contains(expanded, "${") && cfg.Fallback != "" && message != cfg.Fallback {
+		expanded = expandVars(cfg.Fallback, vars)
+	}
+
 	return pushover.Payload{
 		Title:    expandVars(cfg.Title, vars),
-		Message:  expandVars(message, vars),
+		Message:  expanded,
 		URL:      expandVars(cfg.URL, vars),
 		URLTitle: expandVars(cfg.URLTitle, vars),
 		HTML:     cfg.HTML,

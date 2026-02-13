@@ -134,6 +134,25 @@ func TestBuildPushoverNamedCaptureAndFallback(t *testing.T) {
 	}
 }
 
+func TestBuildPushoverUnexpandedVarFallback(t *testing.T) {
+	// When message contains ${code} but no code was extracted, should use fallback
+	msg := graph.Message{Subject: "Linuxize: How to do stuff", Body: "No codes here at all"}
+
+	cfg := &config.PushoverRule{
+		Title:    "${from_name}",
+		Message:  "${code}",
+		Fallback: "${subject}",
+		Extract: []config.ExtractPattern{
+			{Pattern: `\b(\d{6})\b`, Capture: "code"},
+		},
+	}
+
+	payload := BuildPushover(cfg, msg)
+	if payload.Message != "Linuxize: How to do stuff" {
+		t.Fatalf("expected subject fallback when code not extracted, got %q", payload.Message)
+	}
+}
+
 func TestBuildPushoverHTMLExtraction(t *testing.T) {
 	msg := graph.Message{
 		Subject:  "Link",
