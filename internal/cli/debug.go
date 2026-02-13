@@ -24,16 +24,21 @@ Verbs:
   notify    Send pushover for matching notify_only rules
   process   Full processing: move + label + notify
 
+Flags:
+  --clear-category <name>   Remove an Outlook category before move/process
+                            (e.g. --clear-category Missort)
+
 Examples:
   mailflow debug '<message-id>'              # show matches
   mailflow debug '<message-id>' move         # debug + move
-  mailflow debug '<message-id>' notify       # test pushover
+  mailflow debug '<message-id>' move --clear-category Missort
   mailflow debug '<message-id>' process      # full processing`,
 	Args: cobra.RangeArgs(1, 2),
 	RunE: runDebug,
 }
 
 func init() {
+	debugCmd.Flags().String("clear-category", "", "remove this Outlook category after move/process (e.g. Missort)")
 	rootCmd.AddCommand(debugCmd)
 }
 
@@ -43,6 +48,7 @@ func runDebug(cmd *cobra.Command, args []string) error {
 	if len(args) > 1 {
 		verb = strings.ToLower(args[1])
 	}
+	clearCategory, _ := cmd.Flags().GetString("clear-category")
 
 	// Validate verb
 	validVerbs := map[string]bool{
@@ -150,6 +156,15 @@ func runDebug(cmd *cobra.Command, args []string) error {
 	case "move":
 		// Move the email
 		if result.MatchedRule != nil {
+			// Clear category before move (ID changes after move, categories travel with message)
+			if clearCategory != "" {
+				remaining, err := client.RemoveCategory(ctx, msg.ID, clearCategory)
+				if err != nil {
+					fmt.Printf("Warning: failed to clear category %q: %v\n", clearCategory, err)
+				} else {
+					fmt.Printf("Cleared category %q (remaining: %v)\n", clearCategory, remaining)
+				}
+			}
 			if err := env.ProcessSingle(ctx, msg.ID); err != nil {
 				return fmt.Errorf("failed to move: %w", err)
 			}
@@ -181,6 +196,15 @@ func runDebug(cmd *cobra.Command, args []string) error {
 
 	case "process":
 		// Full processing: move + labels + notify
+		// Clear category before move (ID changes after move, categories travel with message)
+		if clearCategory != "" && result.MatchedRule != nil {
+			remaining, err := client.RemoveCategory(ctx, msg.ID, clearCategory)
+			if err != nil {
+				fmt.Printf("Warning: failed to clear category %q: %v\n", clearCategory, err)
+			} else {
+				fmt.Printf("Cleared category %q (remaining: %v)\n", clearCategory, remaining)
+			}
+		}
 		if err := env.ProcessSingle(ctx, msg.ID); err != nil {
 			return fmt.Errorf("failed to process: %w", err)
 		}

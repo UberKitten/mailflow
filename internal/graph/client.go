@@ -922,6 +922,46 @@ func (c *Client) FlagMessage(ctx context.Context, msgID string, status string) e
 	return nil
 }
 
+// GetCategories returns the current categories on a message.
+func (c *Client) GetCategories(ctx context.Context, msgID string) ([]string, error) {
+	endpoint := fmt.Sprintf("%s/me/messages/%s?$select=categories", c.baseURL, msgID)
+	resp, err := c.doWithRetry(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("get categories failed: %s - %s", resp.Status, string(body))
+	}
+	var result struct {
+		Categories []string `json:"categories"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	return result.Categories, nil
+}
+
+// RemoveCategory removes a single category from a message, preserving others.
+// Returns the remaining categories.
+func (c *Client) RemoveCategory(ctx context.Context, msgID string, category string) ([]string, error) {
+	current, err := c.GetCategories(ctx, msgID)
+	if err != nil {
+		return nil, err
+	}
+	var remaining []string
+	for _, cat := range current {
+		if cat != category {
+			remaining = append(remaining, cat)
+		}
+	}
+	if err := c.SetCategories(ctx, msgID, remaining); err != nil {
+		return nil, err
+	}
+	return remaining, nil
+}
+
 // SetCategories sets the categories on a message.
 // Categories are colored labels in Outlook (e.g., "Red Category", "Blue Category", or custom names).
 func (c *Client) SetCategories(ctx context.Context, msgID string, categories []string) error {
