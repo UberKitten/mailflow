@@ -64,6 +64,7 @@ var knownRuleKeys = map[string]bool{
 	"body_contains": true, "body_contains_any": true,
 	"body_prefix_contains": true, "body_prefix_length": true,
 	"subject_not_contains": true, "body_not_contains": true,
+	"header_contains": true,
 	"case_insensitive": true, "catchall": true, "on_match": true,
 	"notify_only": true,
 }
@@ -247,6 +248,7 @@ type Rule struct {
 	BodyNotContains    []string
 	BodyPrefixContains []string
 	BodyPrefixLength   int
+	HeaderContains     map[string][]string // header name → list of match values (any match = pass)
 	CaseInsensitive    bool
 	Catchall           bool
 	NotifyOnly         bool
@@ -686,6 +688,22 @@ func (r *Rule) UnmarshalYAML(value *yaml.Node) error {
 			return err
 		}
 		r.BodyNotContains = append(r.BodyNotContains, list...)
+	}
+	if node, ok := raw["header_contains"]; ok {
+		// header_contains is a map of header name to string-or-list-of-strings
+		if node.Kind != yaml.MappingNode {
+			return fmt.Errorf("header_contains must be a mapping")
+		}
+		r.HeaderContains = make(map[string][]string)
+		for i := 0; i < len(node.Content); i += 2 {
+			headerName := node.Content[i].Value
+			valNode := node.Content[i+1]
+			list, err := decodeStringList(valNode)
+			if err != nil {
+				return fmt.Errorf("header_contains[%s]: %w", headerName, err)
+			}
+			r.HeaderContains[headerName] = list
+		}
 	}
 	if node, ok := raw["case_insensitive"]; ok {
 		_ = node.Decode(&r.CaseInsensitive)

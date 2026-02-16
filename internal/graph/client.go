@@ -98,6 +98,7 @@ type Message struct {
 	Snippet  string
 	IsRead   bool
 	Received time.Time
+	Headers  map[string]string
 }
 
 type graphMessage struct {
@@ -118,9 +119,13 @@ type graphMessage struct {
 		ContentType string `json:"contentType"`
 		Content     string `json:"content"`
 	} `json:"body"`
-	BodyPreview      string `json:"bodyPreview"`
-	IsRead           bool   `json:"isRead"`
-	ReceivedDateTime string `json:"receivedDateTime"`
+	BodyPreview            string `json:"bodyPreview"`
+	IsRead                 bool   `json:"isRead"`
+	ReceivedDateTime       string `json:"receivedDateTime"`
+	InternetMessageHeaders []struct {
+		Name  string `json:"name"`
+		Value string `json:"value"`
+	} `json:"internetMessageHeaders"`
 }
 
 type listResponse struct {
@@ -536,7 +541,7 @@ func buildSelect(opts ListOptions) string {
 	} else if opts.Fast {
 		fields = []string{"id", "from", "subject", "toRecipients", "receivedDateTime"}
 	} else {
-		fields = []string{"id", "subject", "from", "toRecipients", "body", "bodyPreview", "isRead", "receivedDateTime"}
+		fields = []string{"id", "subject", "from", "toRecipients", "body", "bodyPreview", "isRead", "receivedDateTime", "internetMessageHeaders"}
 	}
 	if !containsField(fields, "receivedDateTime") {
 		fields = append(fields, "receivedDateTime")
@@ -745,6 +750,12 @@ func toMessage(m graphMessage) Message {
 	}
 	received, _ := time.Parse(time.RFC3339, m.ReceivedDateTime)
 
+	// Convert internet message headers to map
+	headers := make(map[string]string)
+	for _, h := range m.InternetMessageHeaders {
+		headers[h.Name] = h.Value
+	}
+
 	return Message{
 		ID:       m.ID,
 		Subject:  m.Subject,
@@ -756,6 +767,7 @@ func toMessage(m graphMessage) Message {
 		Snippet:  m.BodyPreview,
 		IsRead:   m.IsRead,
 		Received: received,
+		Headers:  headers,
 	}
 }
 
@@ -799,7 +811,7 @@ func (c *Client) MoveMessage(ctx context.Context, msgID, destFolderID string) (s
 // GetMessage fetches a single message by ID
 func (c *Client) GetMessage(ctx context.Context, msgID string) (*Message, error) {
 	params := url.Values{}
-	params.Set("$select", "id,subject,from,toRecipients,body,bodyPreview,isRead,receivedDateTime,parentFolderId")
+	params.Set("$select", "id,subject,from,toRecipients,body,bodyPreview,isRead,receivedDateTime,parentFolderId,internetMessageHeaders")
 	endpoint := fmt.Sprintf("%s/me/messages/%s?%s", c.baseURL, msgID, params.Encode())
 
 	resp, err := c.doWithRetry(ctx, http.MethodGet, endpoint, nil)
@@ -829,7 +841,7 @@ func (c *Client) GetMessage(ctx context.Context, msgID string) (*Message, error)
 // The messageID should include angle brackets, e.g. "<abc123@example.com>"
 func (c *Client) GetMessageByInternetMessageID(ctx context.Context, messageID string) (*Message, error) {
 	params := url.Values{}
-	params.Set("$select", "id,subject,from,toRecipients,body,bodyPreview,isRead,receivedDateTime,parentFolderId,internetMessageId")
+	params.Set("$select", "id,subject,from,toRecipients,body,bodyPreview,isRead,receivedDateTime,parentFolderId,internetMessageId,internetMessageHeaders")
 	params.Set("$filter", fmt.Sprintf("internetMessageId eq '%s'", messageID))
 	params.Set("$top", "1")
 	endpoint := fmt.Sprintf("%s/me/messages?%s", c.baseURL, params.Encode())

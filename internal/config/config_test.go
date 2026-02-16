@@ -576,3 +576,97 @@ rules:
 		t.Fatal("expected mark_read=true")
 	}
 }
+
+// --- header_contains YAML parsing tests ---
+
+func TestHeaderContainsParsing(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "config.yaml"), "include:\n  - rules.d/*.yaml\n")
+
+	// Test both single string and list values
+	writeFile(t, filepath.Join(dir, "rules.d", "rules.yaml"), `version: 1
+rules:
+  - name: header-list-test
+    folder: Inbox/Lists
+    header_contains:
+      List-Id:
+        - "oss-security.lists.openwall.com"
+        - "fulldisclosure.seclists.org"
+      Precedence: "list"
+`)
+
+	cfg, err := loadMainConfig(dir)
+	if err != nil {
+		t.Fatalf("loadMainConfig: %v", err)
+	}
+	ruleset, err := loadRules(dir, cfg, map[string]SenderList{})
+	if err != nil {
+		t.Fatalf("loadRules: %v", err)
+	}
+
+	if len(ruleset.Rules) != 1 {
+		t.Fatalf("expected 1 rule, got %d", len(ruleset.Rules))
+	}
+
+	rule := ruleset.Rules[0]
+	if rule.HeaderContains == nil {
+		t.Fatal("expected header_contains to be parsed")
+	}
+	if len(rule.HeaderContains) != 2 {
+		t.Fatalf("expected 2 header_contains entries, got %d", len(rule.HeaderContains))
+	}
+
+	// Check List-Id has 2 values
+	listIdValues, ok := rule.HeaderContains["List-Id"]
+	if !ok {
+		t.Fatal("expected List-Id in header_contains")
+	}
+	if len(listIdValues) != 2 {
+		t.Fatalf("expected 2 List-Id values, got %d", len(listIdValues))
+	}
+	if listIdValues[0] != "oss-security.lists.openwall.com" {
+		t.Fatalf("unexpected List-Id[0]: %q", listIdValues[0])
+	}
+	if listIdValues[1] != "fulldisclosure.seclists.org" {
+		t.Fatalf("unexpected List-Id[1]: %q", listIdValues[1])
+	}
+
+	// Check Precedence has 1 value (parsed from single string)
+	precValues, ok := rule.HeaderContains["Precedence"]
+	if !ok {
+		t.Fatal("expected Precedence in header_contains")
+	}
+	if len(precValues) != 1 {
+		t.Fatalf("expected 1 Precedence value, got %d", len(precValues))
+	}
+	if precValues[0] != "list" {
+		t.Fatalf("unexpected Precedence[0]: %q", precValues[0])
+	}
+}
+
+func TestHeaderContainsParsingEmptyMap(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "config.yaml"), "include:\n  - rules.d/*.yaml\n")
+
+	// Test rule without header_contains (should have nil map)
+	writeFile(t, filepath.Join(dir, "rules.d", "rules.yaml"), `version: 1
+rules:
+  - name: no-headers
+    folder: Inbox
+    from: user@example.com
+`)
+
+	cfg, err := loadMainConfig(dir)
+	if err != nil {
+		t.Fatalf("loadMainConfig: %v", err)
+	}
+	ruleset, err := loadRules(dir, cfg, map[string]SenderList{})
+	if err != nil {
+		t.Fatalf("loadRules: %v", err)
+	}
+
+	rule := ruleset.Rules[0]
+	if rule.HeaderContains != nil && len(rule.HeaderContains) > 0 {
+		t.Fatalf("expected nil/empty header_contains, got %v", rule.HeaderContains)
+	}
+}

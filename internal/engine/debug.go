@@ -172,6 +172,58 @@ func debugRuleMatch(rule config.Rule, msg graph.Message, opts MatchOptions) Debu
 		}
 	}
 
+	// header_contains condition
+	if len(rule.HeaderContains) > 0 {
+		if opts.Fast {
+			// In fast mode, headers aren't fetched
+			for headerName, patterns := range rule.HeaderContains {
+				cond := DebugCondition{
+					Name:    "header_contains[" + headerName + "]",
+					Got:     "(not fetched)",
+					Want:    truncateList(patterns, 5),
+					Matched: false,
+					Note:    "skipped in fast mode",
+				}
+				result.Conditions = append(result.Conditions, cond)
+			}
+			result.Matched = false
+		} else {
+			for headerName, patterns := range rule.HeaderContains {
+				headerValue := getHeaderCaseInsensitive(msg.Headers, headerName)
+				got := headerValue
+				if got == "" {
+					got = "(not present)"
+				}
+				cond := DebugCondition{
+					Name: "header_contains[" + headerName + "]",
+					Got:  truncateString(got, 100),
+					Want: truncateList(patterns, 5),
+				}
+				matched := false
+				if headerValue != "" {
+					for _, pattern := range patterns {
+						cmpPattern := pattern
+						cmpValue := headerValue
+						if rule.CaseInsensitive {
+							cmpPattern = strings.ToLower(cmpPattern)
+							cmpValue = strings.ToLower(cmpValue)
+						}
+						if strings.Contains(cmpValue, cmpPattern) {
+							matched = true
+							cond.MatchedValues = append(cond.MatchedValues, pattern)
+							break
+						}
+					}
+				}
+				cond.Matched = matched
+				result.Conditions = append(result.Conditions, cond)
+				if !matched {
+					result.Matched = false
+				}
+			}
+		}
+	}
+
 	// body_contains condition
 	if len(rule.BodyContains) > 0 {
 		cond := DebugCondition{

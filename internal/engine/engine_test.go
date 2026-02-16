@@ -625,3 +625,238 @@ func TestMatchSender(t *testing.T) {
 		}
 	}
 }
+
+// --- header_contains tests ---
+
+func TestMatchHeaderContains(t *testing.T) {
+	rules := &config.RuleSet{Rules: []config.Rule{
+		{
+			Name:           "list-id-match",
+			HeaderContains: map[string][]string{"List-Id": {"oss-security"}},
+		},
+	}}
+
+	msg := graph.Message{
+		From:    "user@example.com",
+		Headers: map[string]string{"List-Id": "<oss-security.lists.openwall.com>"},
+	}
+
+	rule := Match(rules, msg, MatchOptions{})
+	if rule == nil || rule.Name != "list-id-match" {
+		t.Fatalf("expected list-id-match rule to match, got %v", rule)
+	}
+}
+
+func TestMatchHeaderContainsCaseInsensitive(t *testing.T) {
+	// Test that header NAME lookup is always case-insensitive (per RFC 2822)
+	// but VALUE matching respects the case_insensitive flag
+	rules := &config.RuleSet{Rules: []config.Rule{
+		{
+			Name:            "case-insensitive-name",
+			HeaderContains:  map[string][]string{"list-id": {"oss-security"}}, // lowercase header name
+			CaseInsensitive: false,                                            // value matching is case-sensitive
+		},
+	}}
+
+	// Header name in message is "List-Id" (mixed case), rule uses "list-id" (lowercase)
+	// Should still match because header name lookup is always case-insensitive
+	msg := graph.Message{
+		From:    "user@example.com",
+		Headers: map[string]string{"List-Id": "<oss-security.lists.openwall.com>"},
+	}
+
+	rule := Match(rules, msg, MatchOptions{})
+	if rule == nil || rule.Name != "case-insensitive-name" {
+		t.Fatalf("expected case-insensitive header name lookup, got %v", rule)
+	}
+
+	// Now test case-sensitive VALUE matching
+	msg2 := graph.Message{
+		From:    "user@example.com",
+		Headers: map[string]string{"List-Id": "<OSS-SECURITY.lists.openwall.com>"},
+	}
+	rule2 := Match(rules, msg2, MatchOptions{})
+	if rule2 != nil {
+		t.Fatalf("expected no match for case-sensitive value comparison, got %v", rule2)
+	}
+
+	// Test case-insensitive VALUE matching
+	rulesCI := &config.RuleSet{Rules: []config.Rule{
+		{
+			Name:            "case-insensitive-value",
+			HeaderContains:  map[string][]string{"List-Id": {"oss-security"}},
+			CaseInsensitive: true,
+		},
+	}}
+
+	rule3 := Match(rulesCI, msg2, MatchOptions{})
+	if rule3 == nil || rule3.Name != "case-insensitive-value" {
+		t.Fatalf("expected case-insensitive value match, got %v", rule3)
+	}
+}
+
+func TestMatchHeaderContainsMultipleValues(t *testing.T) {
+	// Multiple patterns - any match = pass
+	rules := &config.RuleSet{Rules: []config.Rule{
+		{
+			Name: "multi-value",
+			HeaderContains: map[string][]string{
+				"List-Id": {"oss-security", "fulldisclosure", "bugtraq"},
+			},
+		},
+	}}
+
+	msg := graph.Message{
+		From:    "user@example.com",
+		Headers: map[string]string{"List-Id": "<fulldisclosure.seclists.org>"},
+	}
+
+	rule := Match(rules, msg, MatchOptions{})
+	if rule == nil || rule.Name != "multi-value" {
+		t.Fatalf("expected multi-value rule to match, got %v", rule)
+	}
+
+	// None of the patterns match
+	msg2 := graph.Message{
+		From:    "user@example.com",
+		Headers: map[string]string{"List-Id": "<some-other-list@example.com>"},
+	}
+	rule2 := Match(rules, msg2, MatchOptions{})
+	if rule2 != nil {
+		t.Fatalf("expected no match when no patterns match, got %v", rule2)
+	}
+}
+
+func TestMatchHeaderContainsNoHeader(t *testing.T) {
+	rules := &config.RuleSet{Rules: []config.Rule{
+		{
+			Name:           "needs-header",
+			HeaderContains: map[string][]string{"List-Id": {"oss-security"}},
+		},
+	}}
+
+	// Message without List-Id header
+	msg := graph.Message{
+		From:    "user@example.com",
+		Headers: map[string]string{"X-Mailer": "Some Mailer"},
+	}
+
+	rule := Match(rules, msg, MatchOptions{})
+	if rule != nil {
+		t.Fatalf("expected no match when header is missing, got %v", rule)
+	}
+
+	// Message with nil/empty headers
+	msg2 := graph.Message{From: "user@example.com"}
+	rule2 := Match(rules, msg2, MatchOptions{})
+	if rule2 != nil {
+		t.Fatalf("expected no match with nil headers, got %v", rule2)
+	}
+}
+
+func TestMatchHeaderContainsFastMode(t *testing.T) {
+	rules := &config.RuleSet{Rules: []config.Rule{
+		{Name: "header-rule", HeaderContains: map[string][]string{"List-Id": {"test"}}},
+		{Name: "from-rule", From: []string{"*@example.com"}},
+	}}
+
+	msg := graph.Message{
+		From:    "user@example.com",
+		Headers: map[string]string{"List-Id": "test-list"},
+	}
+
+	// In fast mode, header rule should be skipped (headers not fetched)
+	rule := Match(rules, msg, MatchOptions{Fast: true})
+	if rule == nil || rule.Name != "from-rule" {
+		t.Fatalf("expected from-rule in fast mode, got %v", rule)
+	}
+
+	// In normal mode, header rule matches first
+	rule2 := Match(rules, msg, MatchOptions{Fast: false})
+	if rule2 == nil || rule2.Name != "header-rule" {
+		t.Fatalf("expected header-rule in normal mode, got %v", rule2)
+	}
+}
+
+func TestMatchHeaderContainsSubstring(t *testing.T) {
+	// Test partial/substring matching (not exact match)
+	rules := &config.RuleSet{Rules: []config.Rule{
+		{
+			Name:           "substring-match",
+			HeaderContains: map[string][]string{"List-Id": {"oss-security"}},
+		},
+	}}
+
+	// Pattern "oss-security" should match header value "<oss-security.lists.openwall.com>"
+	msg := graph.Message{
+		From:    "user@example.com",
+		Headers: map[string]string{"List-Id": "<oss-security.lists.openwall.com>"},
+	}
+
+	rule := Match(rules, msg, MatchOptions{})
+	if rule == nil || rule.Name != "substring-match" {
+		t.Fatalf("expected substring match, got %v", rule)
+	}
+
+	// Also test with the full value as pattern
+	rules2 := &config.RuleSet{Rules: []config.Rule{
+		{
+			Name:           "full-match",
+			HeaderContains: map[string][]string{"List-Id": {"<oss-security.lists.openwall.com>"}},
+		},
+	}}
+
+	rule2 := Match(rules2, msg, MatchOptions{})
+	if rule2 == nil || rule2.Name != "full-match" {
+		t.Fatalf("expected full match, got %v", rule2)
+	}
+}
+
+func TestMatchHeaderContainsMultipleHeaders(t *testing.T) {
+	// Rule with multiple header conditions - ALL must match
+	rules := &config.RuleSet{Rules: []config.Rule{
+		{
+			Name: "multi-header",
+			HeaderContains: map[string][]string{
+				"List-Id":    {"oss-security"},
+				"Precedence": {"list"},
+			},
+		},
+	}}
+
+	// Both headers present and match
+	msg := graph.Message{
+		From: "user@example.com",
+		Headers: map[string]string{
+			"List-Id":    "<oss-security.lists.openwall.com>",
+			"Precedence": "list",
+		},
+	}
+	rule := Match(rules, msg, MatchOptions{})
+	if rule == nil || rule.Name != "multi-header" {
+		t.Fatalf("expected match when all headers match, got %v", rule)
+	}
+
+	// One header missing
+	msg2 := graph.Message{
+		From:    "user@example.com",
+		Headers: map[string]string{"List-Id": "<oss-security.lists.openwall.com>"},
+	}
+	rule2 := Match(rules, msg2, MatchOptions{})
+	if rule2 != nil {
+		t.Fatalf("expected no match when one header is missing, got %v", rule2)
+	}
+
+	// One header doesn't match
+	msg3 := graph.Message{
+		From: "user@example.com",
+		Headers: map[string]string{
+			"List-Id":    "<oss-security.lists.openwall.com>",
+			"Precedence": "bulk",
+		},
+	}
+	rule3 := Match(rules, msg3, MatchOptions{})
+	if rule3 != nil {
+		t.Fatalf("expected no match when one header value doesn't match, got %v", rule3)
+	}
+}

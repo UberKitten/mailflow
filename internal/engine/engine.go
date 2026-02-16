@@ -432,6 +432,39 @@ func ruleMatches(rule config.Rule, msg graph.Message, opts MatchOptions) bool {
 		}
 	}
 
+	// header_contains: skip in fast mode (headers not fetched)
+	if opts.Fast && len(rule.HeaderContains) > 0 {
+		return false
+	}
+
+	// header_contains: for each header in rule, check if message header contains any pattern
+	if len(rule.HeaderContains) > 0 {
+		for headerName, patterns := range rule.HeaderContains {
+			// Look up header value case-insensitively (per RFC 2822)
+			headerValue := getHeaderCaseInsensitive(msg.Headers, headerName)
+			if headerValue == "" {
+				// Header not present in message
+				return false
+			}
+			matched := false
+			for _, pattern := range patterns {
+				cmpPattern := pattern
+				cmpValue := headerValue
+				if rule.CaseInsensitive {
+					cmpPattern = strings.ToLower(cmpPattern)
+					cmpValue = strings.ToLower(cmpValue)
+				}
+				if strings.Contains(cmpValue, cmpPattern) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				return false
+			}
+		}
+	}
+
 	if opts.Fast && len(rule.BodyContains) > 0 {
 		return false
 	}
@@ -571,6 +604,23 @@ func domainFromEmail(addr string) string {
 		return ""
 	}
 	return parts[1]
+}
+
+// getHeaderCaseInsensitive looks up a header value case-insensitively.
+// Per RFC 2822, header field names are case-insensitive.
+func getHeaderCaseInsensitive(headers map[string]string, name string) string {
+	// Try exact match first
+	if val, ok := headers[name]; ok {
+		return val
+	}
+	// Fall back to case-insensitive search
+	nameLower := strings.ToLower(name)
+	for k, v := range headers {
+		if strings.ToLower(k) == nameLower {
+			return v
+		}
+	}
+	return ""
 }
 
 // MatchSender checks if an email address matches a pattern (supports * wildcards).
