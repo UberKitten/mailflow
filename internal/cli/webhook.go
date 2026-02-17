@@ -213,7 +213,7 @@ func runWebhook(cmd *cobra.Command, args []string) error {
 			// Initial sweep on startup
 			sweepCtx, sweepCancel := context.WithTimeout(ctx, 5*time.Minute)
 			report, err := eng.Resort(sweepCtx, sweepFolder, engine.ResortOptions{
-				Fast:   true,
+				Fast:   false,
 				DryRun: false,
 			})
 			sweepCancel()
@@ -232,7 +232,7 @@ func runWebhook(cmd *cobra.Command, args []string) error {
 				case <-ticker.C:
 					sweepCtx, sweepCancel := context.WithTimeout(ctx, 5*time.Minute)
 					report, err := eng.Resort(sweepCtx, sweepFolder, engine.ResortOptions{
-						Fast:   true,
+						Fast:   false,
 						DryRun: false,
 					})
 					sweepCancel()

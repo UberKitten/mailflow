@@ -13,7 +13,7 @@ services:
       - apps
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.mailflow.rule=Host(\`mailflow.uberkitten.com\`)"
+      - "traefik.http.routers.mailflow.rule=Host(`mailflow.uberkitten.com`)"
       - "traefik.http.routers.mailflow.entrypoints=https"
       - "traefik.http.routers.mailflow.tls=true"
       - "traefik.http.routers.mailflow.tls.certresolver=letsEncryptCloudflare"
