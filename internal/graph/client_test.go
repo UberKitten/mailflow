@@ -156,23 +156,19 @@ func TestSenderPatternToFilter(t *testing.T) {
 		pattern  string
 		expected string
 	}{
-		// Exact match
+		// Exact match — only type supported server-side
 		{"user@domain.com", "from/emailAddress/address eq 'user@domain.com'"},
 		{"USER@DOMAIN.COM", "from/emailAddress/address eq 'user@domain.com'"}, // case-insensitive
 
-		// Suffix match (domain wildcard)
-		{"*@domain.com", "endsWith(from/emailAddress/address, '@domain.com')"},
-		{"*@DOMAIN.COM", "endsWith(from/emailAddress/address, '@domain.com')"},
-
-		// Prefix match
-		{"user@*", "startsWith(from/emailAddress/address, 'user@')"},
-		{"newsletter@*", "startsWith(from/emailAddress/address, 'newsletter@')"},
-
-		// Patterns that can't be server-filtered (return empty)
-		{"*news*@domain.com", ""}, // wildcard in middle
-		{"*@*", ""},               // multiple wildcards
-		{"*news*@*", ""},          // multiple wildcards
-		{"user*@domain.com", ""},  // wildcard in middle of local part
+		// Wildcard patterns fall back to client-side (return empty)
+		{"*@domain.com", ""},
+		{"*@DOMAIN.COM", ""},
+		{"user@*", ""},
+		{"newsletter@*", ""},
+		{"*news*@domain.com", ""},
+		{"*@*", ""},
+		{"*news*@*", ""},
+		{"user*@domain.com", ""},
 
 		// Empty pattern
 		{"", ""},

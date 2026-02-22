@@ -403,32 +403,15 @@ func senderPatternToFilter(pattern string) string {
 	// Lowercase for case-insensitive matching
 	pattern = strings.ToLower(pattern)
 
-	// Count wildcards
-	starCount := strings.Count(pattern, "*")
-
-	switch starCount {
-	case 0:
-		// Exact match: user@domain.com
+	// Only exact match can be reliably filtered server-side.
+	// Graph API does not support endsWith on from/emailAddress/address,
+	// and startsWith on nested properties is unreliable.
+	// Wildcard patterns fall back to client-side filtering.
+	if !strings.Contains(pattern, "*") {
 		return fmt.Sprintf("from/emailAddress/address eq '%s'", pattern)
-
-	case 1:
-		if strings.HasPrefix(pattern, "*") && !strings.Contains(pattern[1:], "*") {
-			// Suffix match: *@domain.com
-			suffix := pattern[1:] // "@domain.com"
-			return fmt.Sprintf("endsWith(from/emailAddress/address, '%s')", suffix)
-		}
-		if strings.HasSuffix(pattern, "*") && !strings.Contains(pattern[:len(pattern)-1], "*") {
-			// Prefix match: user@*
-			prefix := pattern[:len(pattern)-1] // "user@"
-			return fmt.Sprintf("startsWith(from/emailAddress/address, '%s')", prefix)
-		}
-		// Single wildcard in the middle - can't filter server-side
-		return ""
-
-	default:
-		// Multiple wildcards - can't filter server-side
-		return ""
 	}
+
+	return ""
 }
 
 func (c *Client) StreamMessages(ctx context.Context, folderID string, opts ListOptions, fn func(msg Message) error) error {
