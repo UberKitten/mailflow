@@ -860,3 +860,159 @@ func TestMatchHeaderContainsMultipleHeaders(t *testing.T) {
 		t.Fatalf("expected no match when one header value doesn't match, got %v", rule3)
 	}
 }
+
+func TestMatchFromName(t *testing.T) {
+	rules := &config.RuleSet{Rules: []config.Rule{
+		{
+			Name:     "exact-name",
+			FromName: []string{"John Doe"},
+		},
+	}}
+
+	// Exact match
+	msg := graph.Message{
+		From:     "john@example.com",
+		FromName: "John Doe",
+	}
+	rule := Match(rules, msg, MatchOptions{})
+	if rule == nil || rule.Name != "exact-name" {
+		t.Fatalf("expected match for exact from_name, got %v", rule)
+	}
+
+	// No match - different name
+	msg2 := graph.Message{
+		From:     "john@example.com",
+		FromName: "Jane Doe",
+	}
+	rule2 := Match(rules, msg2, MatchOptions{})
+	if rule2 != nil {
+		t.Fatalf("expected no match for different name, got %v", rule2)
+	}
+}
+
+func TestMatchFromNameWildcard(t *testing.T) {
+	rules := &config.RuleSet{Rules: []config.Rule{
+		{
+			Name:     "wildcard-name",
+			FromName: []string{"*@Newsletter"},
+		},
+	}}
+
+	// Wildcard match
+	msg := graph.Message{
+		From:     "newsletter@example.com",
+		FromName: "Company@Newsletter",
+	}
+	rule := Match(rules, msg, MatchOptions{})
+	if rule == nil || rule.Name != "wildcard-name" {
+		t.Fatalf("expected match for wildcard from_name, got %v", rule)
+	}
+}
+
+func TestMatchFromNameCaseInsensitive(t *testing.T) {
+	rules := &config.RuleSet{Rules: []config.Rule{
+		{
+			Name:            "case-insensitive-name",
+			FromName:        []string{"john doe"},
+			CaseInsensitive: true,
+		},
+	}}
+
+	// Case-insensitive match
+	msg := graph.Message{
+		From:     "john@example.com",
+		FromName: "JOHN DOE",
+	}
+	rule := Match(rules, msg, MatchOptions{})
+	if rule == nil || rule.Name != "case-insensitive-name" {
+		t.Fatalf("expected case-insensitive match, got %v", rule)
+	}
+}
+
+func TestMatchFromNameContains(t *testing.T) {
+	rules := &config.RuleSet{Rules: []config.Rule{
+		{
+			Name:             "name-contains",
+			FromNameContains: []string{"View from the Wing"},
+		},
+	}}
+
+	// Substring match
+	msg := graph.Message{
+		From:     "newsletter@example.com",
+		FromName: "Gary Leff - View from the Wing",
+	}
+	rule := Match(rules, msg, MatchOptions{})
+	if rule == nil || rule.Name != "name-contains" {
+		t.Fatalf("expected match for from_name_contains, got %v", rule)
+	}
+
+	// No match - substring not present
+	msg2 := graph.Message{
+		From:     "newsletter@example.com",
+		FromName: "Some Other Newsletter",
+	}
+	rule2 := Match(rules, msg2, MatchOptions{})
+	if rule2 != nil {
+		t.Fatalf("expected no match when substring not present, got %v", rule2)
+	}
+}
+
+func TestMatchFromNameContainsCaseInsensitive(t *testing.T) {
+	rules := &config.RuleSet{Rules: []config.Rule{
+		{
+			Name:             "name-contains-ci",
+			FromNameContains: []string{"view from the wing"},
+			CaseInsensitive:  true,
+		},
+	}}
+
+	// Case-insensitive substring match
+	msg := graph.Message{
+		From:     "newsletter@example.com",
+		FromName: "Gary Leff - VIEW FROM THE WING",
+	}
+	rule := Match(rules, msg, MatchOptions{})
+	if rule == nil || rule.Name != "name-contains-ci" {
+		t.Fatalf("expected case-insensitive match, got %v", rule)
+	}
+}
+
+func TestMatchFromNameContainsMultiple(t *testing.T) {
+	rules := &config.RuleSet{Rules: []config.Rule{
+		{
+			Name:             "name-contains-any",
+			FromNameContains: []string{"Wing", "Points"},
+		},
+	}}
+
+	// First pattern matches
+	msg := graph.Message{
+		From:     "newsletter@example.com",
+		FromName: "View from the Wing",
+	}
+	rule := Match(rules, msg, MatchOptions{})
+	if rule == nil || rule.Name != "name-contains-any" {
+		t.Fatalf("expected match for first pattern, got %v", rule)
+	}
+
+	// Second pattern matches
+	msg2 := graph.Message{
+		From:     "newsletter@example.com",
+		FromName: "Million Points Guy",
+	}
+	rule2 := Match(rules, msg2, MatchOptions{})
+	if rule2 == nil || rule2.Name != "name-contains-any" {
+		t.Fatalf("expected match for second pattern, got %v", rule2)
+	}
+
+	// Neither matches
+	msg3 := graph.Message{
+		From:     "newsletter@example.com",
+		FromName: "Travel Blog",
+	}
+	rule3 := Match(rules, msg3, MatchOptions{})
+	if rule3 != nil {
+		t.Fatalf("expected no match when neither pattern present, got %v", rule3)
+	}
+}

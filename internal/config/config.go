@@ -59,6 +59,7 @@ var knownFolderRulesKeys = map[string]bool{
 // knownRuleKeys are the valid keys in rule definitions
 var knownRuleKeys = map[string]bool{
 	"name": true, "folder": true, "from": true, "to": true,
+	"from_name": true, "from_name_contains": true,
 	"from_domain": true, "to_domain": true,
 	"subject_contains": true, "subject_contains_any": true,
 	"body_contains": true, "body_contains_any": true,
@@ -239,6 +240,8 @@ type Rule struct {
 	Source             string
 	Folder             string
 	From               []string
+	FromName           []string
+	FromNameContains   []string
 	To                 []string
 	FromDomain         []string
 	ToDomain           []string
@@ -606,6 +609,20 @@ func (r *Rule) UnmarshalYAML(value *yaml.Node) error {
 			return err
 		}
 		r.From = list
+	}
+	if node, ok := raw["from_name"]; ok {
+		list, err := decodeStringList(node)
+		if err != nil {
+			return err
+		}
+		r.FromName = list
+	}
+	if node, ok := raw["from_name_contains"]; ok {
+		list, err := decodeStringList(node)
+		if err != nil {
+			return err
+		}
+		r.FromNameContains = list
 	}
 	if node, ok := raw["to"]; ok {
 		list, err := decodeStringList(node)

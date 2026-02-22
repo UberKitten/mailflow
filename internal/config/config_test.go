@@ -670,3 +670,67 @@ rules:
 		t.Fatalf("expected nil/empty header_contains, got %v", rule.HeaderContains)
 	}
 }
+
+func TestFromNameParsing(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "config.yaml"), "include:\n  - rules.d/*.yaml\n")
+
+	writeFile(t, filepath.Join(dir, "rules.d", "rules.yaml"), `version: 1
+rules:
+  - name: from-name-exact
+    folder: Inbox/Posts
+    from_name:
+      - "View from the Wing"
+      - "One Mile at a Time"
+  - name: from-name-contains
+    folder: Inbox/Posts
+    from_name_contains:
+      - "Newsletter"
+  - name: from-name-single
+    folder: Inbox/Posts
+    from_name: "Single Value"
+`)
+
+	cfg, err := loadMainConfig(dir)
+	if err != nil {
+		t.Fatalf("loadMainConfig: %v", err)
+	}
+	ruleset, err := loadRules(dir, cfg, map[string]SenderList{})
+	if err != nil {
+		t.Fatalf("loadRules: %v", err)
+	}
+
+	if len(ruleset.Rules) != 3 {
+		t.Fatalf("expected 3 rules, got %d", len(ruleset.Rules))
+	}
+
+	// Check from_name list
+	rule1 := ruleset.Rules[0]
+	if len(rule1.FromName) != 2 {
+		t.Fatalf("expected 2 FromName values, got %d", len(rule1.FromName))
+	}
+	if rule1.FromName[0] != "View from the Wing" {
+		t.Fatalf("unexpected FromName[0]: %q", rule1.FromName[0])
+	}
+	if rule1.FromName[1] != "One Mile at a Time" {
+		t.Fatalf("unexpected FromName[1]: %q", rule1.FromName[1])
+	}
+
+	// Check from_name_contains
+	rule2 := ruleset.Rules[1]
+	if len(rule2.FromNameContains) != 1 {
+		t.Fatalf("expected 1 FromNameContains value, got %d", len(rule2.FromNameContains))
+	}
+	if rule2.FromNameContains[0] != "Newsletter" {
+		t.Fatalf("unexpected FromNameContains[0]: %q", rule2.FromNameContains[0])
+	}
+
+	// Check single value from_name (should work without list)
+	rule3 := ruleset.Rules[2]
+	if len(rule3.FromName) != 1 {
+		t.Fatalf("expected 1 FromName value for single, got %d", len(rule3.FromName))
+	}
+	if rule3.FromName[0] != "Single Value" {
+		t.Fatalf("unexpected FromName[0]: %q", rule3.FromName[0])
+	}
+}

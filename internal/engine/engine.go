@@ -376,6 +376,7 @@ func ruleMatches(rule config.Rule, msg graph.Message, opts MatchOptions) bool {
 	subject := msg.Subject
 	body := msg.Body
 	from := msg.From
+	fromName := msg.FromName
 	fromDomain := domainFromEmail(from)
 	toList := msg.To
 
@@ -383,6 +384,7 @@ func ruleMatches(rule config.Rule, msg graph.Message, opts MatchOptions) bool {
 		subject = strings.ToLower(subject)
 		body = strings.ToLower(body)
 		from = strings.ToLower(from)
+		fromName = strings.ToLower(fromName)
 		fromDomain = strings.ToLower(fromDomain)
 		for i, t := range toList {
 			toList[i] = strings.ToLower(t)
@@ -393,6 +395,40 @@ func ruleMatches(rule config.Rule, msg graph.Message, opts MatchOptions) bool {
 		matched := false
 		for _, pattern := range rule.From {
 			if matchPattern(pattern, from, rule.CaseInsensitive) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+
+	if len(rule.FromName) > 0 {
+		matched := false
+		for _, pattern := range rule.FromName {
+			if matchPattern(pattern, fromName, rule.CaseInsensitive) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+
+	if len(rule.FromNameContains) > 0 {
+		matched := false
+		checkName := fromName
+		if rule.CaseInsensitive {
+			checkName = strings.ToLower(fromName)
+		}
+		for _, needle := range rule.FromNameContains {
+			checkNeedle := needle
+			if rule.CaseInsensitive {
+				checkNeedle = strings.ToLower(needle)
+			}
+			if strings.Contains(checkName, checkNeedle) {
 				matched = true
 				break
 			}
