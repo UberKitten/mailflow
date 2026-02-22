@@ -153,32 +153,84 @@ func TestListMessagesAPIFailure(t *testing.T) {
 
 func TestSenderPatternToFilter(t *testing.T) {
 	tests := []struct {
-		pattern  string
-		expected string
+		pattern        string
+		expectedFilter string
+		expectedSearch string
 	}{
-		// Exact match — only type supported server-side
-		{"user@domain.com", "from/emailAddress/address eq 'user@domain.com'"},
-		{"USER@DOMAIN.COM", "from/emailAddress/address eq 'user@domain.com'"}, // case-insensitive
+		// Exact match — uses $filter
+		{"user@domain.com", "from/emailAddress/address eq 'user@domain.com'", ""},
+		{"USER@DOMAIN.COM", "from/emailAddress/address eq 'user@domain.com'", ""}, // case-insensitive
 
-		// Wildcard patterns fall back to client-side (return empty)
-		{"*@domain.com", ""},
-		{"*@DOMAIN.COM", ""},
-		{"user@*", ""},
-		{"newsletter@*", ""},
-		{"*news*@domain.com", ""},
-		{"*@*", ""},
-		{"*news*@*", ""},
-		{"user*@domain.com", ""},
+		// Wildcard suffix patterns — uses $search
+		{"*@domain.com", "", "from:domain.com"},
+		{"*@DOMAIN.COM", "", "from:domain.com"}, // case-insensitive
+		{"*@sub.domain.com", "", "from:sub.domain.com"},
+
+		// Wildcard prefix patterns — uses $search
+		{"user@*", "", "from:user@"},
+		{"newsletter@*", "", "from:newsletter@"},
+
+		// Complex wildcard patterns — extracts best search term
+		{"*news*@domain.com", "", "from:@domain.com"},        // @domain.com is longest
+		{"*newsletter*@*", "", "from:newsletter"},            // newsletter is longest
+		{"user*@domain.com", "", "from:@domain.com"},         // @domain.com is longest
+		{"*-notifications@*", "", "from:-notifications@"},    // -notifications@ is longest
+
+		// Pattern that can't be narrowed — returns empty (must scan all)
+		{"*@*", "", ""},
 
 		// Empty pattern
-		{"", ""},
+		{"", "", ""},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.pattern, func(t *testing.T) {
-			got := senderPatternToFilter(tt.pattern)
-			if got != tt.expected {
-				t.Errorf("senderPatternToFilter(%q) = %q, want %q", tt.pattern, got, tt.expected)
+			gotFilter, gotSearch := senderPatternToFilter(tt.pattern)
+			if gotFilter != tt.expectedFilter {
+				t.Errorf("senderPatternToFilter(%q) filter = %q, want %q", tt.pattern, gotFilter, tt.expectedFilter)
+			}
+			if gotSearch != tt.expectedSearch {
+				t.Errorf("senderPatternToFilter(%q) search = %q, want %q", tt.pattern, gotSearch, tt.expectedSearch)
+			}
+		})
+	}
+}
+
+func TestMatchSenderPattern(t *testing.T) {
+	tests := []struct {
+		pattern string
+		email   string
+		want    bool
+	}{
+		// Exact match
+		{"user@domain.com", "user@domain.com", true},
+		{"user@domain.com", "USER@DOMAIN.COM", true}, // case-insensitive
+		{"user@domain.com", "other@domain.com", false},
+
+		// Wildcard suffix
+		{"*@domain.com", "user@domain.com", true},
+		{"*@domain.com", "any.user@domain.com", true},
+		{"*@domain.com", "user@other.com", false},
+
+		// Wildcard prefix
+		{"user@*", "user@domain.com", true},
+		{"user@*", "user@any.domain.com", true},
+		{"user@*", "other@domain.com", false},
+
+		// Complex wildcards
+		{"*news*@*", "newsletter@domain.com", true},
+		{"*news*@*", "daily-news@example.org", true},
+		{"*news*@*", "random@domain.com", false},
+
+		// Empty pattern matches all
+		{"", "anything@anywhere.com", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.pattern+"_"+tt.email, func(t *testing.T) {
+			got := matchSenderPattern(tt.pattern, tt.email)
+			if got != tt.want {
+				t.Errorf("matchSenderPattern(%q, %q) = %v, want %v", tt.pattern, tt.email, got, tt.want)
 			}
 		})
 	}

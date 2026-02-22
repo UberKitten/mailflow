@@ -387,31 +387,83 @@ type dateRange struct {
 
 // StreamMessages streams messages from Graph in pages and invokes fn for each message.
 // If fn returns an error, streaming stops and that error is returned.
-// senderPatternToFilter converts a glob-style sender pattern to a Graph API $filter clause.
-// Returns empty string if the pattern can't be converted to a server-side filter.
-// Supported patterns:
-//   - "user@domain.com" → from/emailAddress/address eq 'user@domain.com'
-//   - "*@domain.com" → endsWith(from/emailAddress/address, '@domain.com')
-//   - "user@*" → startsWith(from/emailAddress/address, 'user@')
+// senderPatternToFilter converts a glob-style sender pattern to Graph API query parameters.
+// Returns (filterStr, searchStr):
+//   - filterStr: $filter clause for exact matches
+//   - searchStr: KQL search string for wildcard patterns (use with $search)
 //
-// Complex patterns like "*news*@*" require client-side filtering (returns empty string).
-func senderPatternToFilter(pattern string) string {
+// Supported patterns:
+//   - "user@domain.com" → filter: "from/emailAddress/address eq 'user@domain.com'"
+//   - "*@domain.com" → search: "from:domain.com"
+//   - "user@*" → search: "from:user@"
+//   - "*pattern*@*" → search: "from:pattern" (best effort, requires client-side verify)
+//
+// Note: Graph API $search is fuzzy and may over-match. Always verify results client-side.
+func senderPatternToFilter(pattern string) (filterStr, searchStr string) {
 	if pattern == "" {
-		return ""
+		return "", ""
 	}
 
 	// Lowercase for case-insensitive matching
 	pattern = strings.ToLower(pattern)
 
-	// Only exact match can be reliably filtered server-side.
-	// Graph API does not support endsWith on from/emailAddress/address,
-	// and startsWith on nested properties is unreliable.
-	// Wildcard patterns fall back to client-side filtering.
+	// Exact match: use $filter (most precise)
 	if !strings.Contains(pattern, "*") {
-		return fmt.Sprintf("from/emailAddress/address eq '%s'", pattern)
+		return fmt.Sprintf("from/emailAddress/address eq '%s'", pattern), ""
 	}
 
-	return ""
+	// Wildcard patterns: use $search with KQL from: syntax
+	// KQL from: does substring matching on sender addresses
+
+	// Pattern: *@domain.com → search: "from:domain.com"
+	if strings.HasPrefix(pattern, "*@") && !strings.Contains(pattern[2:], "*") {
+		domain := pattern[2:] // Strip leading *@
+		return "", fmt.Sprintf("from:%s", domain)
+	}
+
+	// Pattern: user@* → search: "from:user@"
+	if strings.HasSuffix(pattern, "@*") && !strings.Contains(pattern[:len(pattern)-2], "*") {
+		localPart := pattern[:len(pattern)-1] // Strip trailing * but keep @
+		return "", fmt.Sprintf("from:%s", localPart)
+	}
+
+	// Pattern: *pattern*@* or other complex wildcards → extract best search term
+	// Find the longest non-* segment to search for
+	parts := strings.Split(pattern, "*")
+	var longestPart string
+	for _, part := range parts {
+		// Skip @-only parts and very short parts
+		if part != "" && part != "@" && len(part) > len(longestPart) {
+			longestPart = part
+		}
+	}
+	if longestPart != "" {
+		return "", fmt.Sprintf("from:%s", longestPart)
+	}
+
+	// Pattern like *@* — can't narrow down at all, must scan everything
+	return "", ""
+}
+
+// matchSenderPattern checks if an email address matches a glob pattern.
+// Used for client-side verification of $search results.
+func matchSenderPattern(pattern, email string) bool {
+	if pattern == "" {
+		return true
+	}
+
+	// Case-insensitive matching
+	pattern = strings.ToLower(pattern)
+	email = strings.ToLower(email)
+
+	// Convert glob to regex
+	escaped := regexp.QuoteMeta(pattern)
+	escaped = strings.ReplaceAll(escaped, "\\*", ".*")
+	re, err := regexp.Compile("^" + escaped + "$")
+	if err != nil {
+		return false
+	}
+	return re.MatchString(email)
 }
 
 func (c *Client) StreamMessages(ctx context.Context, folderID string, opts ListOptions, fn func(msg Message) error) error {
@@ -425,13 +477,19 @@ func (c *Client) StreamMessages(ctx context.Context, folderID string, opts ListO
 		filtersNoDate = append(filtersNoDate, "isRead eq false")
 	}
 
-	// Add sender filter if provided
+	// Check if we need to use $search for sender pattern
+	var senderFilter, senderSearch string
+	var senderPattern string // For client-side verification
 	if opts.SenderFilter != "" {
-		if senderFilter := senderPatternToFilter(opts.SenderFilter); senderFilter != "" {
+		senderPattern = opts.SenderFilter
+		senderFilter, senderSearch = senderPatternToFilter(opts.SenderFilter)
+		if senderFilter != "" {
 			filtersNoDate = append(filtersNoDate, senderFilter)
 			slog.Info("using server-side sender filter", "pattern", opts.SenderFilter, "filter", senderFilter)
+		} else if senderSearch != "" {
+			slog.Info("using server-side sender search", "pattern", opts.SenderFilter, "search", senderSearch)
 		} else {
-			slog.Info("sender pattern requires client-side filtering", "pattern", opts.SenderFilter)
+			slog.Info("sender pattern requires full client-side filtering", "pattern", opts.SenderFilter)
 		}
 	}
 
@@ -445,6 +503,62 @@ func (c *Client) StreamMessages(ctx context.Context, folderID string, opts ListO
 		beforeTime = beforeTime.UTC()
 	}
 
+	// When using $search, we can't combine with $filter or $orderby.
+	// Use simple pagination path with client-side filtering for dates.
+	if senderSearch != "" {
+		// Graph API $search requires the value to be double-quoted
+		params.Set("$search", fmt.Sprintf("\"%s\"", senderSearch))
+		params.Del("$orderby") // $search doesn't support $orderby
+
+		// If there are other filters (like OnlyUnread), we can't use them with $search
+		// Log a warning and apply them client-side
+		if len(filtersNoDate) > 0 {
+			slog.Warn("$search cannot combine with $filter, applying filters client-side",
+				"filters", filtersNoDate)
+		}
+
+		// Warn about date filtering being client-side
+		if !sinceTime.IsZero() || !beforeTime.IsZero() {
+			slog.Info("date filtering will be applied client-side (cannot combine with $search)")
+		}
+
+		endpoint := fmt.Sprintf("%s/me/mailFolders/%s/messages?%s", c.baseURL, folderID, params.Encode())
+		var resultCount int
+		err := c.streamMessagesEndpoint(ctx, endpoint, func(m graphMessage) error {
+			resultCount++
+			msg := toMessage(m)
+
+			// Client-side sender verification (search is fuzzy)
+			if senderPattern != "" && !matchSenderPattern(senderPattern, msg.From) {
+				return nil // Skip non-matching
+			}
+
+			// Client-side date filtering
+			if !sinceTime.IsZero() && msg.Received.Before(sinceTime) {
+				return nil
+			}
+			if !beforeTime.IsZero() && !msg.Received.Before(beforeTime) {
+				return nil
+			}
+
+			// Client-side OnlyUnread filter
+			if opts.OnlyUnread && msg.IsRead {
+				return nil
+			}
+
+			return fn(msg)
+		})
+
+		// Warn if we hit the Graph API $search limit
+		if resultCount >= 1000 {
+			slog.Warn("$search results may be incomplete (hit 1000 result limit)",
+				"pattern", opts.SenderFilter, "results", resultCount)
+		}
+
+		return err
+	}
+
+	// Standard path: use $filter (batched or simple pagination)
 	if c.shouldBatch(ctx, folderID) {
 		start, end, ok, err := c.getDateBounds(ctx, folderID, filtersNoDate, sinceTime, beforeTime)
 		if err != nil {
