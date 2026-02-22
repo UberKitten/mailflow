@@ -74,16 +74,17 @@ func (e *Engine) ProcessOnce(ctx context.Context, since time.Duration) error {
 	}
 
 	for _, msg := range msgs {
-		// First, process all matching notify_only rules (they don't move messages)
+		// Collect notify_only rules before moving (match against original message)
 		notifyRules := MatchNotifyOnly(e.rules, msg)
-		for _, notifyRule := range notifyRules {
-			slog.Info("notify_only matched", "id", msg.ID, "from", msg.From, "subject", msg.Subject, "rule", notifyRule.Name)
-			e.executeOnMatch(ctx, msg.ID, msg, notifyRule, OnMatchOptions{AllowPushover: true})
-		}
 
-		// Then find the sorting rule
+		// Find the sorting rule
 		rule := Match(e.rules, msg, MatchOptions{})
 		if rule == nil {
+			// No sorting rule — fire notify_only with original ID (message stays put)
+			for _, notifyRule := range notifyRules {
+				slog.Info("notify_only matched", "id", msg.ID, "from", msg.From, "subject", msg.Subject, "rule", notifyRule.Name)
+				e.executeOnMatch(ctx, msg.ID, msg, notifyRule, OnMatchOptions{AllowPushover: true})
+			}
 			continue
 		}
 
@@ -102,6 +103,13 @@ func (e *Engine) ProcessOnce(ctx context.Context, since time.Duration) error {
 		slog.Info("moved", "id", newMsgID, "from", msg.From, "subject", msg.Subject, "rule", rule.Name, "folder", rule.Folder)
 
 		msg.ID = newMsgID
+
+		// Fire notify_only rules AFTER move so ${message_id} reflects the new ID
+		for _, notifyRule := range notifyRules {
+			slog.Info("notify_only matched", "id", newMsgID, "from", msg.From, "subject", msg.Subject, "rule", notifyRule.Name)
+			e.executeOnMatch(ctx, newMsgID, msg, notifyRule, OnMatchOptions{AllowPushover: true})
+		}
+
 		e.executeOnMatch(ctx, newMsgID, msg, rule, OnMatchOptions{AllowPushover: true})
 	}
 
@@ -139,16 +147,17 @@ func (e *Engine) ProcessSingle(ctx context.Context, messageID string) error {
 		return fmt.Errorf("get message: %w", err)
 	}
 
-	// First, process all matching notify_only rules (they don't move messages)
+	// Collect notify_only rules before moving (match against original message)
 	notifyRules := MatchNotifyOnly(e.rules, *msg)
-	for _, notifyRule := range notifyRules {
-		slog.Info("notify_only matched", "id", messageID, "from", msg.From, "subject", msg.Subject, "rule", notifyRule.Name)
-		e.executeOnMatch(ctx, messageID, *msg, notifyRule, OnMatchOptions{AllowPushover: true})
-	}
 
 	// Match against sorting rules
 	rule := Match(e.rules, *msg, MatchOptions{})
 	if rule == nil {
+		// No sorting rule — fire notify_only with original ID (message stays put)
+		for _, notifyRule := range notifyRules {
+			slog.Info("notify_only matched", "id", messageID, "from", msg.From, "subject", msg.Subject, "rule", notifyRule.Name)
+			e.executeOnMatch(ctx, messageID, *msg, notifyRule, OnMatchOptions{AllowPushover: true})
+		}
 		slog.Debug("no rule matched", "messageId", messageID, "from", msg.From, "subject", msg.Subject)
 		return nil
 	}
@@ -172,6 +181,13 @@ func (e *Engine) ProcessSingle(ctx context.Context, messageID string) error {
 
 	// Execute on_match actions with new message ID (ID changes on move in Graph API)
 	msg.ID = newMsgID
+
+	// Fire notify_only rules AFTER move so ${message_id} reflects the new ID
+	for _, notifyRule := range notifyRules {
+		slog.Info("notify_only matched", "id", newMsgID, "from", msg.From, "subject", msg.Subject, "rule", notifyRule.Name)
+		e.executeOnMatch(ctx, newMsgID, *msg, notifyRule, OnMatchOptions{AllowPushover: true})
+	}
+
 	e.executeOnMatch(ctx, newMsgID, *msg, rule, OnMatchOptions{AllowPushover: true})
 
 	return nil
