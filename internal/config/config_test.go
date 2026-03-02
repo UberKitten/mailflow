@@ -671,6 +671,42 @@ rules:
 	}
 }
 
+func TestFolderCategoriesFor(t *testing.T) {
+	cfg := &Config{
+		FolderCategories: []FolderCategory{
+			{Folder: "Inbox/Posts", Categories: []string{"Post"}},
+			{Folder: "Inbox/Security", Categories: []string{"Security", "Important"}},
+		},
+	}
+
+	tests := []struct {
+		folder string
+		want   []string
+	}{
+		{"Inbox/Posts", []string{"Post"}},
+		{"Inbox/Posts/Tech", []string{"Post"}},
+		{"Inbox/Posts/Gaming", []string{"Post"}},
+		{"Inbox/Security", []string{"Security", "Important"}},
+		{"Inbox/Promotions", nil},
+		{"Inbox", nil},
+		{"Inbox/PostsExtra", nil}, // not a subfolder of Posts
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.folder, func(t *testing.T) {
+			got := cfg.FolderCategoriesFor(tt.folder)
+			if len(got) != len(tt.want) {
+				t.Fatalf("FolderCategoriesFor(%q) = %v, want %v", tt.folder, got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("FolderCategoriesFor(%q)[%d] = %q, want %q", tt.folder, i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
 func TestFromNameParsing(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "config.yaml"), "include:\n  - rules.d/*.yaml\n")

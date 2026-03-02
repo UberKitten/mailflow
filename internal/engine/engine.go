@@ -222,38 +222,47 @@ func (e *Engine) ApplyOnMatch(ctx context.Context, msgID string, msg graph.Messa
 
 // executeOnMatch runs all on_match actions for a rule
 func (e *Engine) executeOnMatch(ctx context.Context, msgID string, msg graph.Message, rule *config.Rule, opts OnMatchOptions) {
-	if rule.OnMatch == nil {
+	// Merge rule-level categories with folder-level auto-categories
+	ruleCategories := rule.OnMatchCategories()
+	folderCategories := e.cfg.FolderCategoriesFor(rule.Folder)
+	mergedCategories := mergeCategories(ruleCategories, folderCategories)
+
+	if rule.OnMatch == nil && len(mergedCategories) == 0 {
 		return
 	}
 
-	if rule.OnMatch.MarkRead {
-		if err := e.client.MarkRead(ctx, msgID); err != nil {
-			slog.Warn("mark read failed", "id", msgID, "error", err)
+	if rule.OnMatch != nil {
+		if rule.OnMatch.MarkRead {
+			if err := e.client.MarkRead(ctx, msgID); err != nil {
+				slog.Warn("mark read failed", "id", msgID, "error", err)
+			}
+		}
+
+		if rule.OnMatch.Flag != "" {
+			if err := e.client.FlagMessage(ctx, msgID, rule.OnMatch.Flag); err != nil {
+				slog.Warn("flag message failed", "id", msgID, "flag", rule.OnMatch.Flag, "error", err)
+			} else {
+				slog.Debug("flagged message", "id", msgID, "flag", rule.OnMatch.Flag)
+			}
 		}
 	}
 
-	if rule.OnMatch.Flag != "" {
-		if err := e.client.FlagMessage(ctx, msgID, rule.OnMatch.Flag); err != nil {
-			slog.Warn("flag message failed", "id", msgID, "flag", rule.OnMatch.Flag, "error", err)
+	if len(mergedCategories) > 0 {
+		if err := e.client.SetCategories(ctx, msgID, mergedCategories); err != nil {
+			slog.Warn("set categories failed", "id", msgID, "categories", mergedCategories, "error", err)
 		} else {
-			slog.Debug("flagged message", "id", msgID, "flag", rule.OnMatch.Flag)
+			slog.Debug("set categories", "id", msgID, "categories", mergedCategories)
 		}
 	}
 
-	if len(rule.OnMatch.Categories) > 0 {
-		if err := e.client.SetCategories(ctx, msgID, rule.OnMatch.Categories); err != nil {
-			slog.Warn("set categories failed", "id", msgID, "categories", rule.OnMatch.Categories, "error", err)
-		} else {
-			slog.Debug("set categories", "id", msgID, "categories", rule.OnMatch.Categories)
+	if rule.OnMatch != nil {
+		if opts.AllowPushover && rule.OnMatch.Pushover != nil {
+			e.sendPushover(msg, rule)
 		}
-	}
 
-	if opts.AllowPushover && rule.OnMatch.Pushover != nil {
-		e.sendPushover(msg, rule)
-	}
-
-	if rule.OnMatch.Exec != nil {
-		e.executeExec(ctx, msg, rule.OnMatch.Exec)
+		if rule.OnMatch.Exec != nil {
+			e.executeExec(ctx, msg, rule.OnMatch.Exec)
+		}
 	}
 }
 
@@ -679,6 +688,31 @@ func getHeaderCaseInsensitive(headers map[string]string, name string) string {
 // Pattern matching is case-insensitive.
 func MatchSender(pattern, email string) bool {
 	return matchPattern(pattern, email, true)
+}
+
+// mergeCategories combines two category slices, deduplicating.
+func mergeCategories(a, b []string) []string {
+	if len(a) == 0 {
+		return b
+	}
+	if len(b) == 0 {
+		return a
+	}
+	seen := make(map[string]bool, len(a)+len(b))
+	result := make([]string, 0, len(a)+len(b))
+	for _, c := range a {
+		if !seen[c] {
+			seen[c] = true
+			result = append(result, c)
+		}
+	}
+	for _, c := range b {
+		if !seen[c] {
+			seen[c] = true
+			result = append(result, c)
+		}
+	}
+	return result
 }
 
 // BuildPushover extracts data and builds payload.

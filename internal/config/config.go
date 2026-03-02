@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -15,6 +16,7 @@ import (
 // knownConfigKeys are the valid top-level keys in config.yaml
 var knownConfigKeys = map[string]bool{
 	"include": true, "graph": true, "pushover": true, "process": true, "webhook": true,
+	"folder_categories": true,
 }
 
 // knownGraphKeys are the valid keys in the graph section
@@ -179,13 +181,22 @@ func checkRuleFileNestedKeys(data []byte, filePath string) {
 	}
 }
 
+// FolderCategory maps a folder prefix to categories that should be auto-applied.
+// Any email moved to a folder matching the prefix (or its subfolders) gets these categories
+// merged with any rule-level on_match categories.
+type FolderCategory struct {
+	Folder     string   `yaml:"folder"`
+	Categories []string `yaml:"categories"`
+}
+
 // Config is the main config file (config.yaml)
 type Config struct {
-	Include  []string      `yaml:"include"`
-	Graph    GraphConfig   `yaml:"graph"`
-	Pushover Pushover      `yaml:"pushover"`
-	Process  ProcessConfig `yaml:"process"`
-	Webhook  WebhookConfig `yaml:"webhook"`
+	Include          []string         `yaml:"include"`
+	Graph            GraphConfig      `yaml:"graph"`
+	Pushover         Pushover         `yaml:"pushover"`
+	Process          ProcessConfig    `yaml:"process"`
+	Webhook          WebhookConfig    `yaml:"webhook"`
+	FolderCategories []FolderCategory `yaml:"folder_categories"`
 }
 
 type WebhookConfig struct {
@@ -219,6 +230,19 @@ type Pushover struct {
 type ProcessConfig struct {
 	PollIntervalSeconds int `yaml:"poll_interval_seconds"`
 	ResortWorkers       int `yaml:"resort_workers"`
+}
+
+// FolderCategoriesFor returns categories that should be auto-applied for a given
+// destination folder. A folder_categories entry with folder "Inbox/Posts" matches
+// "Inbox/Posts" and all subfolders like "Inbox/Posts/Tech".
+func (c *Config) FolderCategoriesFor(folder string) []string {
+	var cats []string
+	for _, fc := range c.FolderCategories {
+		if folder == fc.Folder || strings.HasPrefix(folder, fc.Folder+"/") {
+			cats = append(cats, fc.Categories...)
+		}
+	}
+	return cats
 }
 
 // SenderList defines a reusable sender list.
@@ -336,6 +360,14 @@ type PushoverRule struct {
 type ExtractPattern struct {
 	Pattern string `yaml:"pattern"`
 	Capture string `yaml:"capture"`
+}
+
+// OnMatchCategories returns the categories from on_match, or nil if none.
+func (r *Rule) OnMatchCategories() []string {
+	if r.OnMatch == nil {
+		return nil
+	}
+	return r.OnMatch.Categories
 }
 
 // RuleFile represents a rules file.
