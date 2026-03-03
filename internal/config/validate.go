@@ -129,7 +129,10 @@ func findBroadFromOverlaps(rules *RuleSet, onlyRules map[string]bool) []broadFro
 				if j == i {
 					continue
 				}
-				if !other.Catchall && j <= i {
+				// Only warn about catch-all rules that use from_domain.
+				// Non-catch-all overlaps are normal priority ordering
+				// (e.g. 08-address-overrides overriding 10-security is by design).
+				if !other.Catchall {
 					continue
 				}
 				if len(other.FromDomain) == 0 {
