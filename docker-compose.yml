@@ -4,8 +4,8 @@ services:
     container_name: mailflow
     restart: always
     volumes:
-      - ./config:/config
-      - ./token-script.sh:/app/token-script/token-script.sh:ro
+      - ${MAILFLOW_CONFIG_DIR:-../mailflow-config}:/config
+      - ${MAILFLOW_CONFIG_DIR:-../mailflow-config}/token-script.sh:/app/token-script/token-script.sh:ro
       - /home/apps/paperless-ngx/consume:/paperless-consume
     environment:
       - TZ=${TZ:-America/Los_Angeles}
