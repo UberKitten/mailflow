@@ -33,6 +33,7 @@ func init() {
 	rootCmd.AddCommand(gapsCmd)
 	rootCmd.AddCommand(configCmd)
 	rootCmd.AddCommand(reloadCmd)
+	rootCmd.AddCommand(validateCmd)
 }
 
 func initLogging() {
