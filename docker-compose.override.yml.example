@@ -1,0 +1,25 @@
+# docker-compose.override.yml - local customizations (not tracked in git)
+#
+# Copy this to docker-compose.override.yml and adjust for your setup.
+# Docker Compose automatically merges it with docker-compose.yml.
+
+services:
+  mailflow:
+    volumes:
+      # Mount config from a separate directory/repo
+      - ../mailflow-config:/config
+      # Mount a token refresh script (if using MS Graph token rotation)
+      - ../mailflow-config/token-script.sh:/app/token-script/token-script.sh:ro
+      # Mount Paperless-ngx consume dir (for PDF import action)
+      # - /path/to/paperless/consume:/paperless-consume
+    labels:
+      # Example: Traefik reverse proxy
+      - "traefik.enable=true"
+      - "traefik.http.routers.mailflow.rule=Host(`mailflow.example.com`)"
+      - "traefik.http.services.mailflow.loadbalancer.server.port=8792"
+    networks:
+      - apps
+
+networks:
+  apps:
+    external: true

@@ -6,5 +6,9 @@ mailflow
 .vscode/
 *.swp
 
-# Config (has secrets)
-config.yaml
+# Local overrides
+docker-compose.override.yml
+
+# Config directory (use a separate repo or MAILFLOW_CONFIG_DIR)
+config/
+!config/config.yaml.example

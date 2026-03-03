@@ -4,22 +4,8 @@ services:
     container_name: mailflow
     restart: always
     volumes:
-      - ${MAILFLOW_CONFIG_DIR:-../mailflow-config}:/config
-      - ${MAILFLOW_CONFIG_DIR:-../mailflow-config}/token-script.sh:/app/token-script/token-script.sh:ro
-      - /home/apps/paperless-ngx/consume:/paperless-consume
+      - ${MAILFLOW_CONFIG_DIR:-./config}:/config
     environment:
       - TZ=${TZ:-America/Los_Angeles}
-    networks:
-      - apps
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.mailflow.rule=Host(`mailflow.uberkitten.com`)"
-      - "traefik.http.routers.mailflow.entrypoints=https"
-      - "traefik.http.routers.mailflow.tls=true"
-      - "traefik.http.routers.mailflow.tls.certresolver=letsEncryptCloudflare"
-      - "traefik.http.routers.mailflow.priority=50"
-      - "traefik.http.services.mailflow.loadbalancer.server.port=8792"
-
-networks:
-  apps:
-    external: true
+    ports:
+      - "8792:8792"

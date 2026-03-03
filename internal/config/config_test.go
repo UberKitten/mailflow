@@ -424,9 +424,9 @@ func TestLoadRulesToDomainRef(t *testing.T) {
 
 	writeFile(t, filepath.Join(dir, "senders.d", "rss.yaml"), `name: rss
 domains:
-  - rss.uberkitten.com
+  - rss.example.com
 addresses:
-  - rss@uberkitten.com
+  - rss@example.com
 `)
 
 	writeFile(t, filepath.Join(dir, "rules.d", "rules.yaml"), `version: 1
@@ -450,10 +450,10 @@ rules:
 	}
 
 	rule := ruleset.Rules[0]
-	if len(rule.ToDomain) != 1 || rule.ToDomain[0] != "rss.uberkitten.com" {
+	if len(rule.ToDomain) != 1 || rule.ToDomain[0] != "rss.example.com" {
 		t.Fatalf("expected to_domain resolved, got %v", rule.ToDomain)
 	}
-	if len(rule.To) != 1 || rule.To[0] != "rss@uberkitten.com" {
+	if len(rule.To) != 1 || rule.To[0] != "rss@example.com" {
 		t.Fatalf("expected to addresses resolved, got %v", rule.To)
 	}
 }
