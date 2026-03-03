@@ -23,6 +23,7 @@ var knownConfigKeys = map[string]bool{
 var knownGraphKeys = map[string]bool{
 	"token_script": true, "base_url": true, "max_concurrent_requests": true,
 	"range_workers": true, "large_folder_threshold": true, "range_days": true,
+	"client_id": true, "tenant_id": true, "token_file": true,
 }
 
 // knownWebhookKeys are the valid keys in the webhook section
@@ -214,7 +215,14 @@ type WebhookConfig struct {
 }
 
 type GraphConfig struct {
-	TokenScript           string `yaml:"token_script"`
+	// Built-in OAuth2 token management (recommended)
+	ClientID  string `yaml:"client_id"`
+	TenantID  string `yaml:"tenant_id"`
+	TokenFile string `yaml:"token_file"` // path to cached token JSON
+
+	// External token script (legacy/custom auth)
+	TokenScript string `yaml:"token_script"`
+
 	BaseURL               string `yaml:"base_url"`
 	MaxConcurrentRequests int    `yaml:"max_concurrent_requests"`
 	RangeWorkers          int    `yaml:"range_workers"`
@@ -384,7 +392,7 @@ type FolderRules struct {
 
 // Load reads config.yaml, sender lists, and rules.
 func Load(configDir string) (*Config, *RuleSet, error) {
-	cfg, err := loadMainConfig(configDir)
+	cfg, err := LoadMainConfig(configDir)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -402,7 +410,8 @@ func Load(configDir string) (*Config, *RuleSet, error) {
 	return cfg, ruleset, nil
 }
 
-func loadMainConfig(configDir string) (*Config, error) {
+// LoadMainConfig reads and parses config.yaml (without loading rules/senders).
+func LoadMainConfig(configDir string) (*Config, error) {
 	path := filepath.Join(configDir, "config.yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -418,7 +427,12 @@ func loadMainConfig(configDir string) (*Config, error) {
 		return nil, fmt.Errorf("parse config.yaml: %w", err)
 	}
 
-	if cfg.Graph.TokenScript == "" {
+	if cfg.Graph.ClientID != "" && cfg.Graph.TenantID != "" {
+		// Built-in OAuth2 mode — token_script not needed
+		if cfg.Graph.TokenFile == "" {
+			cfg.Graph.TokenFile = filepath.Join(filepath.Dir(path), ".ms-graph-token.json")
+		}
+	} else if cfg.Graph.TokenScript == "" {
 		home, _ := os.UserHomeDir()
 		cfg.Graph.TokenScript = filepath.Join(home, "bin", "ms-graph-token.sh")
 	}

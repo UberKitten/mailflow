@@ -21,9 +21,9 @@ func TestLoadMainConfigDefaults(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "config.yaml"), "graph: {}\n")
 
-	cfg, err := loadMainConfig(dir)
+	cfg, err := LoadMainConfig(dir)
 	if err != nil {
-		t.Fatalf("loadMainConfig: %v", err)
+		t.Fatalf("LoadMainConfig: %v", err)
 	}
 	if cfg.Graph.BaseURL == "" || !strings.Contains(cfg.Graph.BaseURL, "graph.microsoft.com") {
 		t.Fatalf("expected default base_url, got %q", cfg.Graph.BaseURL)
@@ -64,9 +64,9 @@ rules:
     from: user@example.com
 `)
 
-	cfg, err := loadMainConfig(dir)
+	cfg, err := LoadMainConfig(dir)
 	if err != nil {
-		t.Fatalf("loadMainConfig: %v", err)
+		t.Fatalf("LoadMainConfig: %v", err)
 	}
 	senders, err := loadSenders(dir)
 	if err != nil {
@@ -106,9 +106,9 @@ folders:
         from: alerts@example.com
 `)
 
-	cfg, err := loadMainConfig(dir)
+	cfg, err := LoadMainConfig(dir)
 	if err != nil {
-		t.Fatalf("loadMainConfig: %v", err)
+		t.Fatalf("LoadMainConfig: %v", err)
 	}
 	ruleset, err := loadRules(dir, cfg, map[string]SenderList{})
 	if err != nil {
@@ -174,9 +174,9 @@ rules:
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
 			tt.setup(dir)
-			cfg, err := loadMainConfig(dir)
+			cfg, err := LoadMainConfig(dir)
 			if err != nil {
-				t.Fatalf("loadMainConfig: %v", err)
+				t.Fatalf("LoadMainConfig: %v", err)
 			}
 			_, err = loadRules(dir, cfg, map[string]SenderList{})
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
@@ -188,7 +188,7 @@ rules:
 
 func TestLoadMainConfigMissingFile(t *testing.T) {
 	dir := t.TempDir()
-	_, err := loadMainConfig(dir)
+	_, err := LoadMainConfig(dir)
 	if err == nil || !strings.Contains(err.Error(), "read config.yaml") {
 		t.Fatalf("expected missing file error, got %v", err)
 	}
@@ -213,9 +213,9 @@ rules:
     case_insensitive: true
 `)
 
-	cfg, err := loadMainConfig(dir)
+	cfg, err := LoadMainConfig(dir)
 	if err != nil {
-		t.Fatalf("loadMainConfig: %v", err)
+		t.Fatalf("LoadMainConfig: %v", err)
 	}
 	ruleset, err := loadRules(dir, cfg, map[string]SenderList{})
 	if err != nil {
@@ -255,9 +255,9 @@ rules:
       - "unsubscribe"
 `)
 
-	cfg, err := loadMainConfig(dir)
+	cfg, err := LoadMainConfig(dir)
 	if err != nil {
-		t.Fatalf("loadMainConfig: %v", err)
+		t.Fatalf("LoadMainConfig: %v", err)
 	}
 	ruleset, err := loadRules(dir, cfg, map[string]SenderList{})
 	if err != nil {
@@ -286,9 +286,9 @@ rules:
     body_not_contains: "spam"
 `)
 
-	cfg, err := loadMainConfig(dir)
+	cfg, err := LoadMainConfig(dir)
 	if err != nil {
-		t.Fatalf("loadMainConfig: %v", err)
+		t.Fatalf("LoadMainConfig: %v", err)
 	}
 	ruleset, err := loadRules(dir, cfg, map[string]SenderList{})
 	if err != nil {
@@ -391,9 +391,9 @@ rules:
     from_domain: !ref health
 `)
 
-	cfg, err := loadMainConfig(dir)
+	cfg, err := LoadMainConfig(dir)
 	if err != nil {
-		t.Fatalf("loadMainConfig: %v", err)
+		t.Fatalf("LoadMainConfig: %v", err)
 	}
 	senders, err := loadSenders(dir)
 	if err != nil {
@@ -436,9 +436,9 @@ rules:
     to_domain: !ref rss
 `)
 
-	cfg, err := loadMainConfig(dir)
+	cfg, err := LoadMainConfig(dir)
 	if err != nil {
-		t.Fatalf("loadMainConfig: %v", err)
+		t.Fatalf("LoadMainConfig: %v", err)
 	}
 	senders, err := loadSenders(dir)
 	if err != nil {
@@ -486,9 +486,9 @@ rules:
     catchall: true
 `)
 
-	cfg, err := loadMainConfig(dir)
+	cfg, err := LoadMainConfig(dir)
 	if err != nil {
-		t.Fatalf("loadMainConfig: %v", err)
+		t.Fatalf("LoadMainConfig: %v", err)
 	}
 	ruleset, err := loadRules(dir, cfg, map[string]SenderList{})
 	if err != nil {
@@ -528,9 +528,9 @@ rules:
       - "body1"
 `)
 
-	cfg, err := loadMainConfig(dir)
+	cfg, err := LoadMainConfig(dir)
 	if err != nil {
-		t.Fatalf("loadMainConfig: %v", err)
+		t.Fatalf("LoadMainConfig: %v", err)
 	}
 	ruleset, err := loadRules(dir, cfg, map[string]SenderList{})
 	if err != nil {
@@ -559,9 +559,9 @@ rules:
       mark_read: true
 `)
 
-	cfg, err := loadMainConfig(dir)
+	cfg, err := LoadMainConfig(dir)
 	if err != nil {
-		t.Fatalf("loadMainConfig: %v", err)
+		t.Fatalf("LoadMainConfig: %v", err)
 	}
 	ruleset, err := loadRules(dir, cfg, map[string]SenderList{})
 	if err != nil {
@@ -595,9 +595,9 @@ rules:
       Precedence: "list"
 `)
 
-	cfg, err := loadMainConfig(dir)
+	cfg, err := LoadMainConfig(dir)
 	if err != nil {
-		t.Fatalf("loadMainConfig: %v", err)
+		t.Fatalf("LoadMainConfig: %v", err)
 	}
 	ruleset, err := loadRules(dir, cfg, map[string]SenderList{})
 	if err != nil {
@@ -656,9 +656,9 @@ rules:
     from: user@example.com
 `)
 
-	cfg, err := loadMainConfig(dir)
+	cfg, err := LoadMainConfig(dir)
 	if err != nil {
-		t.Fatalf("loadMainConfig: %v", err)
+		t.Fatalf("LoadMainConfig: %v", err)
 	}
 	ruleset, err := loadRules(dir, cfg, map[string]SenderList{})
 	if err != nil {
@@ -727,9 +727,9 @@ rules:
     from_name: "Single Value"
 `)
 
-	cfg, err := loadMainConfig(dir)
+	cfg, err := LoadMainConfig(dir)
 	if err != nil {
-		t.Fatalf("loadMainConfig: %v", err)
+		t.Fatalf("LoadMainConfig: %v", err)
 	}
 	ruleset, err := loadRules(dir, cfg, map[string]SenderList{})
 	if err != nil {

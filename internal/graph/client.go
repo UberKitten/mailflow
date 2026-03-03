@@ -11,8 +11,6 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
-	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -28,9 +26,10 @@ import (
 var ErrMessageGone = errors.New("message no longer exists")
 
 type Client struct {
-	baseURL     string
-	tokenScript string
-	httpClient  *http.Client
+	baseURL       string
+	tokenProvider *tokenProvider // built-in OAuth2 (preferred)
+	tokenScript   string        // external script (legacy fallback)
+	httpClient    *http.Client
 
 	sema                 chan struct{}
 	maxConcurrent        int
@@ -50,7 +49,6 @@ type Client struct {
 func NewClient(cfg *config.Config) (*Client, error) {
 	c := &Client{
 		baseURL:              cfg.Graph.BaseURL,
-		tokenScript:          cfg.Graph.TokenScript,
 		httpClient:           &http.Client{Timeout: 120 * time.Second},
 		maxConcurrent:        cfg.Graph.MaxConcurrentRequests,
 		rangeWorkers:         cfg.Graph.RangeWorkers,
@@ -59,6 +57,18 @@ func NewClient(cfg *config.Config) (*Client, error) {
 		rng:                  rand.New(rand.NewSource(time.Now().UnixNano())),
 		startTime:            time.Now(),
 	}
+
+	// Prefer built-in OAuth2 if client_id + tenant_id are configured
+	if cfg.Graph.ClientID != "" && cfg.Graph.TenantID != "" {
+		tp, err := newTokenProvider(cfg.Graph.ClientID, cfg.Graph.TenantID, cfg.Graph.TokenFile)
+		if err != nil {
+			return nil, fmt.Errorf("init token provider: %w", err)
+		}
+		c.tokenProvider = tp
+	} else {
+		c.tokenScript = cfg.Graph.TokenScript
+	}
+
 	if c.maxConcurrent > 0 {
 		c.sema = make(chan struct{}, c.maxConcurrent)
 	}
@@ -134,12 +144,10 @@ type listResponse struct {
 }
 
 func (c *Client) token() (string, error) {
-	cmd := exec.Command(filepath.Clean(c.tokenScript))
-	out, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("token script failed: %w", err)
+	if c.tokenProvider != nil {
+		return c.tokenProvider.getToken()
 	}
-	return strings.TrimSpace(string(out)), nil
+	return tokenFromScript(c.tokenScript)
 }
 
 // GetToken returns a valid access token (public wrapper for subscription manager)

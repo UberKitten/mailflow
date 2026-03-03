@@ -49,26 +49,49 @@ When a new sender appears, it lands in Unsorted — making it obvious you need a
 
 ## Quick start
 
-### 1. Get a Graph API token
+### 1. Set up Graph API auth
 
-Register an app in Azure AD with `Mail.ReadWrite` permissions and obtain a refresh token. See [Microsoft's guide](https://learn.microsoft.com/en-us/graph/auth-v2-user).
+Register an app in [Azure AD](https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade) with `Mail.ReadWrite` delegated permissions. Set a redirect URI of `http://localhost:8400/callback`.
 
-Create a token script that outputs a valid access token on stdout:
+Then configure your `client_id` and `tenant_id` in `config.yaml`:
 
-```bash
-#!/bin/bash
-# your-token-script.sh — refresh and output a Graph API access token
-# mailflow calls this whenever it needs a token
+```yaml
+graph:
+  client_id: "your-client-id"
+  tenant_id: "your-tenant-id"
 ```
+
+Mailflow handles OAuth2 token refresh automatically — it caches tokens in `.ms-graph-token.json` next to your config file and refreshes them before they expire.
+
+<details>
+<summary>Alternative: external token script (advanced)</summary>
+
+If you need custom auth (e.g., certificate-based, managed identity), you can provide an external script instead:
+
+```yaml
+graph:
+  token_script: /path/to/your/token-script.sh
+```
+
+The script must output a valid Graph API access token on stdout.
+</details>
 
 ### 2. Configure
 
 ```bash
 cp config/config.yaml.example config/config.yaml
-# Edit with your token script path and Pushover credentials (optional)
+# Edit with your client_id and tenant_id
 ```
 
-### 3. Write rules
+### 3. Authenticate
+
+```bash
+mailflow auth
+# Opens your browser to sign in with your Microsoft account.
+# Token is saved automatically and refreshed before expiry.
+```
+
+### 4. Write rules
 
 ```bash
 mkdir -p config/rules.d config/senders.d
@@ -77,7 +100,7 @@ mkdir -p config/rules.d config/senders.d
 
 Rules are YAML files in `config/rules.d/`, evaluated in filename order. Lower numbers = higher priority.
 
-### 4. Run
+### 5. Run
 
 ```bash
 # Docker (recommended)

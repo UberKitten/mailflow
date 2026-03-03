@@ -1,9 +1,19 @@
 graph:
-  token_script: /app/token-script/token-script.sh
+  # Option 1: Built-in OAuth2 (recommended)
+  # Register an app in Azure AD with Mail.ReadWrite delegated permissions.
+  # Run 'mailflow auth' to obtain the initial refresh token.
+  client_id: "YOUR_CLIENT_ID"
+  tenant_id: "YOUR_TENANT_ID"
+  # token_file defaults to .ms-graph-token.json next to config.yaml
 
-pushover:
-  token: "YOUR_PUSHOVER_TOKEN"
-  user: "YOUR_PUSHOVER_USER"
+  # Option 2: External token script (legacy)
+  # A script that outputs a valid Graph API access token on stdout.
+  # token_script: /path/to/your/token-script.sh
+
+# Optional: Pushover push notifications
+# pushover:
+#   token: "YOUR_PUSHOVER_TOKEN"
+#   user: "YOUR_PUSHOVER_USER"
 
 process:
   poll_interval_seconds: 60
@@ -13,5 +23,3 @@ webhook:
   port: 8792
   path: /webhook
   external_url: https://mailflow.example.com/webhook
-  poll_interval_seconds: 60
-  retry_interval_seconds: 300
