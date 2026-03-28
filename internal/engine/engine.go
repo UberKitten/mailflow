@@ -204,23 +204,21 @@ func (e *Engine) maybeLookupEnvelopeRecipient(ctx context.Context, msg *graph.Me
 	if e.cfg == nil || e.cfg.EnvelopeLookup == nil {
 		return
 	}
-	lookupCfg := e.cfg.EnvelopeLookup
-	if !lookupCfg.EnabledInProcessing || !lookupCfg.Configured() {
+	if !e.cfg.EnvelopeLookup.EnabledInProcessing {
+		return
+	}
+	if !e.client.HasCertAuth() {
 		return
 	}
 
-	messageID := getHeaderCaseInsensitive(msg.Headers, "Message-ID")
-	if messageID == "" {
-		messageID = msg.ID
-		slog.Debug("missing internet message id for envelope lookup, using graph id", "message_id", msg.ID, "from", msg.From)
+	timeout := e.cfg.EnvelopeLookup.Timeout
+	if timeout <= 0 {
+		timeout = 10
 	}
+	lookupCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+	defer cancel()
 
-	recipient, err := graph.LookupEnvelopeRecipient(ctx, graph.EnvelopeLookupConfig{
-		Script:              lookupCfg.Script,
-		URL:                 lookupCfg.URL,
-		Timeout:             lookupCfg.Timeout,
-		EnabledInProcessing: lookupCfg.EnabledInProcessing,
-	}, messageID, msg.From, msg.Received)
+	recipient, err := e.client.LookupEnvelopeRecipient(lookupCtx, msg.From, msg.Received)
 	if err != nil {
 		slog.Warn("envelope lookup failed", "message_id", msg.ID, "from", msg.From, "error", err)
 		return

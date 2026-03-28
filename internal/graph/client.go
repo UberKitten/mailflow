@@ -26,10 +26,11 @@ import (
 var ErrMessageGone = errors.New("message no longer exists")
 
 type Client struct {
-	baseURL       string
-	tokenProvider *tokenProvider // built-in OAuth2 (preferred)
-	tokenScript   string        // external script (legacy fallback)
-	httpClient    *http.Client
+	baseURL           string
+	tokenProvider     *tokenProvider     // built-in OAuth2 (preferred)
+	tokenScript       string             // external script (legacy fallback)
+	certTokenProvider *certTokenProvider // app-only cert auth (for message trace)
+	httpClient        *http.Client
 
 	sema                 chan struct{}
 	maxConcurrent        int
@@ -72,6 +73,24 @@ func NewClient(cfg *config.Config) (*Client, error) {
 	if c.maxConcurrent > 0 {
 		c.sema = make(chan struct{}, c.maxConcurrent)
 	}
+
+	// Optional: cert-based auth for app-only tokens (message trace etc.)
+	if cfg.Graph.CertPath != "" {
+		ctp, err := newCertTokenProvider(
+			cfg.Graph.ClientID,
+			cfg.Graph.TenantID,
+			cfg.Graph.CertPath,
+			cfg.Graph.CertPasswordFile,
+			"https://graph.microsoft.com/.default",
+		)
+		if err != nil {
+			// Non-fatal: cert auth is optional, just log
+			slog.Warn("cert token provider init failed (envelope lookup will be unavailable)", "error", err)
+		} else {
+			c.certTokenProvider = ctp
+		}
+	}
+
 	return c, nil
 }
 
@@ -153,6 +172,11 @@ func (c *Client) token() (string, error) {
 // GetToken returns a valid access token (public wrapper for subscription manager)
 func (c *Client) GetToken() (string, error) {
 	return c.token()
+}
+
+// HasCertAuth returns true if cert-based app-only auth is configured (for message trace).
+func (c *Client) HasCertAuth() bool {
+	return c.certTokenProvider != nil
 }
 
 func (c *Client) do(ctx context.Context, method, url string, body io.Reader) (*http.Response, error) {

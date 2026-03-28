@@ -25,6 +25,7 @@ var knownGraphKeys = map[string]bool{
 	"token_script": true, "base_url": true, "max_concurrent_requests": true,
 	"range_workers": true, "large_folder_threshold": true, "range_days": true,
 	"client_id": true, "tenant_id": true, "token_file": true,
+	"cert_path": true, "cert_password_file": true,
 }
 
 // knownWebhookKeys are the valid keys in the webhook section
@@ -47,7 +48,7 @@ var knownPushoverKeys = map[string]bool{
 
 // knownEnvelopeLookupKeys are the valid keys in the envelope_lookup section
 var knownEnvelopeLookupKeys = map[string]bool{
-	"script": true, "url": true, "timeout": true, "enabled_in_processing": true,
+	"timeout": true, "enabled_in_processing": true,
 }
 
 // knownSenderListKeys are the valid keys in sender list files
@@ -232,6 +233,10 @@ type GraphConfig struct {
 	// External token script (legacy/custom auth)
 	TokenScript string `yaml:"token_script"`
 
+	// Certificate-based app-only auth (optional, for message trace)
+	CertPath         string `yaml:"cert_path"`          // path to PFX certificate
+	CertPasswordFile string `yaml:"cert_password_file"` // file containing cert password
+
 	BaseURL               string `yaml:"base_url"`
 	MaxConcurrentRequests int    `yaml:"max_concurrent_requests"`
 	RangeWorkers          int    `yaml:"range_workers"`
@@ -250,14 +255,12 @@ type ProcessConfig struct {
 }
 
 type EnvelopeLookupConfig struct {
-	Script              string `yaml:"script"`
-	URL                 string `yaml:"url"`
-	Timeout             int    `yaml:"timeout"`
-	EnabledInProcessing bool   `yaml:"enabled_in_processing"`
+	Timeout             int  `yaml:"timeout"`
+	EnabledInProcessing bool `yaml:"enabled_in_processing"`
 }
 
 func (c EnvelopeLookupConfig) Configured() bool {
-	return c.Script != "" || c.URL != ""
+	return true // actual availability depends on graph.cert_path being set
 }
 
 // FolderCategoriesFor returns categories that should be auto-applied for a given

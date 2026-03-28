@@ -1,59 +1,73 @@
 # Envelope Lookup (missing To: recipients)
 
-Mailflow normally matches rules against the `To:` header. Some emails are delivered via BCC or “undisclosed recipients,” which means the `To:` header is empty. In those cases, mailflow can optionally look up the **envelope recipient** (the SMTP `RCPT TO` address) using an external source and inject it into `msg.To` for matching.
+When emails arrive via BCC or "undisclosed recipients", the `To:` header is empty. This breaks rules that use `to:` or `to_domain:` matching. Envelope lookup recovers the original SMTP `RCPT TO` address by querying the [Graph Message Trace API](https://learn.microsoft.com/en-us/exchange/monitoring/trace-an-email-message/graph-api-message-trace).
 
-This feature is **optional** and disabled by default.
+This feature is **optional** and requires certificate-based auth.
 
-## Why this exists
+## How it works
 
-When a message is delivered via BCC, Outlook/Graph often returns **no `To:` recipients**. That breaks any rules that rely on `to:` or `to_domain:` matching. Envelope lookup lets mailflow recover the real delivery target so rules still work.
+1. mailflow detects an email with an empty `To:` header
+2. it calls the Graph beta message trace API with the sender address and approximate received time
+3. the API returns trace entries including the original envelope recipient
+4. mailflow injects the resolved address into `msg.To` so rules can match on it
+
+The `mailflow debug` command always attempts lookup when cert auth is configured. Normal processing only runs lookups when `enabled_in_processing` is true.
 
 ## Configuration
 
+### 1. Certificate auth (in `graph` section)
+
+Add cert fields to your existing `graph:` config:
+
+```yaml
+graph:
+  client_id: "your-app-id"
+  tenant_id: "your-tenant-id"
+  token_file: "/config/.ms-graph-token.json"
+  
+  # Certificate for app-only auth (optional, enables envelope lookup)
+  cert_path: "/config/exo-cert.pfx"
+  cert_password_file: "/config/exo-cert-password"   # file containing the password
+```
+
+### 2. Envelope lookup behavior (optional)
+
 ```yaml
 envelope_lookup:
-  # Option A: shell script (for local/debug use)
-  script: "/path/to/envelope-lookup.sh"
-
-  # Option B: HTTP endpoint (for production Docker use)
-  url: "http://hostname:port/envelope-lookup"
-
-  # Timeout in seconds (default 10)
-  timeout: 10
-
-  # Whether to run during normal processing (default: false)
-  enabled_in_processing: false
+  timeout: 10                    # seconds (default: 10)
+  enabled_in_processing: false   # run during daemon mode (default: false)
 ```
 
-Notes:
-- If **both** `script` and `url` are set, the **script** is used.
-- If neither is set, envelope lookup is disabled.
-- `enabled_in_processing` controls normal processing. The `mailflow debug` command can still run lookups even when this is false.
+If `envelope_lookup` is omitted entirely, the debug command still performs lookups (using the default 10s timeout) as long as `cert_path` is configured.
 
-## Exchange Online lookup script
+## Azure AD setup
 
-The provided reference script uses Exchange Online message trace to find the envelope recipient. It takes three positional arguments:
+The app registration needs:
 
-```
-./scripts/envelope-lookup-exchange.ps1 "<message-id>" "sender@domain.com" "2026-03-27T01:23:45Z"
-```
+1. **`ExchangeMessageTrace.Read.All`** — Application permission on Microsoft Graph
+2. **Admin consent** granted for the tenant  
+3. **Microsoft service principal provisioned** in your tenant:
+   ```powershell
+   Connect-MgGraph -Scopes "Application.ReadWrite.All"
+   New-MgServicePrincipal -BodyParameter @{appId="8bd644d1-64a1-4d4b-ae52-2e0cbf64e373"}
+   ```
+   (one-time setup, may take hours to propagate)
 
-Setup steps:
-1. Install the **ExchangeOnlineManagement** module on the host running the script.
-2. Create an Azure AD app with **Exchange.ManageAsApp** (application) permissions.
-3. Upload a certificate and grant the app the **Mail Recipients** / **Message Trace** roles.
-4. Run the script with app + cert parameters (see script header comments).
+The same certificate used for Exchange.ManageAsApp works — just add the Graph permission alongside it.
 
-The script outputs **only** the recipient address on stdout. Errors are written to stderr.
-
-## Future path: Graph Message Trace API
-
-Microsoft’s Graph Message Trace API is the long-term replacement for PowerShell-based traces. Once it’s available and reliable for this use-case, the HTTP option should switch to a Graph-backed lookup service instead of Exchange PowerShell.
-
-## Retention limits (important)
+## Retention limits
 
 Message trace data is **not permanent**:
-- Standard message trace queries typically cover **~10 days** of history.
-- Historical message trace extends up to **~90 days**, but requires a different workflow.
+- The Graph API covers up to **90 days** of history
+- Older messages will return no results
 
-If a message is older than those limits, envelope lookup will fail.
+## Debug command output
+
+When `To:` is empty and cert auth is configured:
+
+```
+Email: "Subject" from sender@domain.com
+⚠ No To: recipients — envelope lookup: original-alias@yourdomain.com
+```
+
+The resolved address is then used for rule matching in the debug output.
