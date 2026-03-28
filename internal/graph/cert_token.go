@@ -6,10 +6,8 @@ import (
 	"crypto/rsa"
 	"crypto/sha1"
 	"crypto/sha256"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/crypto/pkcs12"
+	gopkcs12 "software.sslmate.com/src/go-pkcs12"
 )
 
 // certTokenProvider acquires app-only (client_credentials) tokens using a certificate.
@@ -71,45 +69,17 @@ func newCertTokenProvider(clientID, tenantID, certPath, certPasswordFile, scope 
 }
 
 func parsePFX(pfxData []byte, password string) (*rsa.PrivateKey, []byte, error) {
-	blocks, err := pkcs12.ToPEM(pfxData, password)
+	privKeyRaw, cert, err := gopkcs12.Decode(pfxData, password)
 	if err != nil {
 		return nil, nil, fmt.Errorf("decode PFX: %w", err)
 	}
 
-	var privKey *rsa.PrivateKey
-	var certDER []byte
-
-	for _, block := range blocks {
-		switch block.Type {
-		case "PRIVATE KEY":
-			key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-			if err != nil {
-				continue
-			}
-			if rsaKey, ok := key.(*rsa.PrivateKey); ok {
-				privKey = rsaKey
-			}
-		case "RSA PRIVATE KEY":
-			key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
-			if err != nil {
-				continue
-			}
-			privKey = key
-		case "CERTIFICATE":
-			if certDER == nil {
-				certDER = block.Bytes
-			}
-		}
+	rsaKey, ok := privKeyRaw.(*rsa.PrivateKey)
+	if !ok {
+		return nil, nil, fmt.Errorf("PFX private key is not RSA (got %T)", privKeyRaw)
 	}
 
-	if privKey == nil {
-		return nil, nil, fmt.Errorf("no RSA private key found in PFX")
-	}
-	if certDER == nil {
-		return nil, nil, fmt.Errorf("no certificate found in PFX")
-	}
-
-	return privKey, certDER, nil
+	return rsaKey, cert.Raw, nil
 }
 
 func (p *certTokenProvider) getToken() (string, error) {
@@ -207,18 +177,4 @@ func (p *certTokenProvider) buildAssertion() (string, error) {
 
 	sigB64 := base64.RawURLEncoding.EncodeToString(sig)
 	return sigInput + "." + sigB64, nil
-}
-
-// decodePEM is a helper to extract PEM blocks from raw data.
-func decodePEM(data []byte) []*pem.Block {
-	var blocks []*pem.Block
-	for {
-		block, rest := pem.Decode(data)
-		if block == nil {
-			break
-		}
-		blocks = append(blocks, block)
-		data = rest
-	}
-	return blocks
 }
