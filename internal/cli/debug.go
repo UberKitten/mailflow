@@ -89,13 +89,42 @@ func runDebug(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	fmt.Printf("Email: %q from %s\n", msg.Subject, msg.From)
+
+	if len(msg.To) == 0 && cfg.EnvelopeLookup != nil {
+		lookupCfg := cfg.EnvelopeLookup
+		if !lookupCfg.Configured() {
+			fmt.Println("⚠ No To: recipients — envelope lookup: not configured")
+		} else {
+			messageID := headerValue(msg.Headers, "Message-ID")
+			if messageID == "" {
+				messageID = msg.ID
+			}
+			recipient, err := graph.LookupEnvelopeRecipient(ctx, graph.EnvelopeLookupConfig{
+				Script:              lookupCfg.Script,
+				URL:                 lookupCfg.URL,
+				Timeout:             lookupCfg.Timeout,
+				EnabledInProcessing: lookupCfg.EnabledInProcessing,
+			}, messageID, msg.From, msg.Received)
+			if err != nil {
+				fmt.Printf("⚠ No To: recipients — envelope lookup failed: %v\n", err)
+			} else if recipient != "" {
+				fmt.Printf("⚠ No To: recipients — envelope lookup: %s\n", recipient)
+				msg.To = []string{recipient}
+			} else {
+				fmt.Println("⚠ No To: recipients — envelope lookup failed: empty recipient")
+			}
+		}
+	}
+
+	fmt.Println()
+
 	// Always show debug output first
 	result, err := env.MatchWithDebug(msg)
 	if err != nil {
 		return err
 	}
 
-	fmt.Printf("Email: %q from %s\n\n", msg.Subject, msg.From)
 	fmt.Printf("Checking %d rules...\n\n", len(result.Rules))
 
 	for _, rule := range result.Rules {
@@ -247,4 +276,20 @@ func formatValue(value string) string {
 		return value[:157] + "..."
 	}
 	return value
+}
+
+func headerValue(headers map[string]string, name string) string {
+	if headers == nil {
+		return ""
+	}
+	if val, ok := headers[name]; ok {
+		return val
+	}
+	nameLower := strings.ToLower(name)
+	for k, v := range headers {
+		if strings.ToLower(k) == nameLower {
+			return v
+		}
+	}
+	return ""
 }

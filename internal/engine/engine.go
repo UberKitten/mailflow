@@ -74,6 +74,8 @@ func (e *Engine) ProcessOnce(ctx context.Context, since time.Duration) error {
 	}
 
 	for _, msg := range msgs {
+		e.maybeLookupEnvelopeRecipient(ctx, &msg)
+
 		// Collect notify_only rules before moving (match against original message)
 		notifyRules := MatchNotifyOnly(e.rules, msg)
 
@@ -147,6 +149,8 @@ func (e *Engine) ProcessSingle(ctx context.Context, messageID string) error {
 		return fmt.Errorf("get message: %w", err)
 	}
 
+	e.maybeLookupEnvelopeRecipient(ctx, msg)
+
 	// Collect notify_only rules before moving (match against original message)
 	notifyRules := MatchNotifyOnly(e.rules, *msg)
 
@@ -191,6 +195,43 @@ func (e *Engine) ProcessSingle(ctx context.Context, messageID string) error {
 	e.executeOnMatch(ctx, newMsgID, *msg, rule, OnMatchOptions{AllowPushover: true})
 
 	return nil
+}
+
+func (e *Engine) maybeLookupEnvelopeRecipient(ctx context.Context, msg *graph.Message) {
+	if len(msg.To) > 0 {
+		return
+	}
+	if e.cfg == nil || e.cfg.EnvelopeLookup == nil {
+		return
+	}
+	lookupCfg := e.cfg.EnvelopeLookup
+	if !lookupCfg.EnabledInProcessing || !lookupCfg.Configured() {
+		return
+	}
+
+	messageID := getHeaderCaseInsensitive(msg.Headers, "Message-ID")
+	if messageID == "" {
+		messageID = msg.ID
+		slog.Debug("missing internet message id for envelope lookup, using graph id", "message_id", msg.ID, "from", msg.From)
+	}
+
+	recipient, err := graph.LookupEnvelopeRecipient(ctx, graph.EnvelopeLookupConfig{
+		Script:              lookupCfg.Script,
+		URL:                 lookupCfg.URL,
+		Timeout:             lookupCfg.Timeout,
+		EnabledInProcessing: lookupCfg.EnabledInProcessing,
+	}, messageID, msg.From, msg.Received)
+	if err != nil {
+		slog.Warn("envelope lookup failed", "message_id", msg.ID, "from", msg.From, "error", err)
+		return
+	}
+	if recipient == "" {
+		slog.Info("envelope lookup empty", "message_id", msg.ID, "from", msg.From)
+		return
+	}
+
+	msg.To = []string{recipient}
+	slog.Info("envelope lookup resolved", "message_id", msg.ID, "from", msg.From, "recipient", recipient)
 }
 
 func (e *Engine) sendPushover(msg graph.Message, rule *config.Rule) {

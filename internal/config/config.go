@@ -17,6 +17,7 @@ import (
 var knownConfigKeys = map[string]bool{
 	"include": true, "graph": true, "pushover": true, "process": true, "webhook": true,
 	"folder_categories": true,
+	"envelope_lookup":   true,
 }
 
 // knownGraphKeys are the valid keys in the graph section
@@ -44,6 +45,11 @@ var knownPushoverKeys = map[string]bool{
 	"token": true, "user": true,
 }
 
+// knownEnvelopeLookupKeys are the valid keys in the envelope_lookup section
+var knownEnvelopeLookupKeys = map[string]bool{
+	"script": true, "url": true, "timeout": true, "enabled_in_processing": true,
+}
+
 // knownSenderListKeys are the valid keys in sender list files
 var knownSenderListKeys = map[string]bool{
 	"name": true, "domains": true, "addresses": true,
@@ -68,7 +74,7 @@ var knownRuleKeys = map[string]bool{
 	"body_contains": true, "body_contains_any": true,
 	"body_prefix_contains": true, "body_prefix_length": true,
 	"subject_not_contains": true, "body_not_contains": true,
-	"header_contains": true,
+	"header_contains":  true,
 	"case_insensitive": true, "catchall": true, "on_match": true,
 	"notify_only": true,
 }
@@ -147,6 +153,8 @@ func checkNestedUnknownKeys(data []byte, configPath string) error {
 			warnUnknownKeys(val, knownProcessKeys, configPath+" -> process")
 		case "pushover":
 			warnUnknownKeys(val, knownPushoverKeys, configPath+" -> pushover")
+		case "envelope_lookup":
+			warnUnknownKeys(val, knownEnvelopeLookupKeys, configPath+" -> envelope_lookup")
 		}
 	}
 	return nil
@@ -192,12 +200,13 @@ type FolderCategory struct {
 
 // Config is the main config file (config.yaml)
 type Config struct {
-	Include          []string         `yaml:"include"`
-	Graph            GraphConfig      `yaml:"graph"`
-	Pushover         Pushover         `yaml:"pushover"`
-	Process          ProcessConfig    `yaml:"process"`
-	Webhook          WebhookConfig    `yaml:"webhook"`
-	FolderCategories []FolderCategory `yaml:"folder_categories"`
+	Include          []string              `yaml:"include"`
+	Graph            GraphConfig           `yaml:"graph"`
+	Pushover         Pushover              `yaml:"pushover"`
+	Process          ProcessConfig         `yaml:"process"`
+	Webhook          WebhookConfig         `yaml:"webhook"`
+	EnvelopeLookup   *EnvelopeLookupConfig `yaml:"envelope_lookup"`
+	FolderCategories []FolderCategory      `yaml:"folder_categories"`
 }
 
 type WebhookConfig struct {
@@ -209,8 +218,8 @@ type WebhookConfig struct {
 	WatchFolder          string `yaml:"watch_folder"` // folder path to watch, default "Inbox"
 	PollIntervalSeconds  int    `yaml:"poll_interval_seconds"`
 	RetryIntervalSeconds int    `yaml:"retry_interval_seconds"`
-	StartupResort        *bool  `yaml:"startup_resort"` // resort watch folder on startup, default true
-	SweepFolder          string `yaml:"sweep_folder"`   // folder to periodically sweep, default "Unsorted"
+	StartupResort        *bool  `yaml:"startup_resort"`         // resort watch folder on startup, default true
+	SweepFolder          string `yaml:"sweep_folder"`           // folder to periodically sweep, default "Unsorted"
 	SweepIntervalSeconds int    `yaml:"sweep_interval_seconds"` // sweep interval, default 60
 }
 
@@ -238,6 +247,17 @@ type Pushover struct {
 type ProcessConfig struct {
 	PollIntervalSeconds int `yaml:"poll_interval_seconds"`
 	ResortWorkers       int `yaml:"resort_workers"`
+}
+
+type EnvelopeLookupConfig struct {
+	Script              string `yaml:"script"`
+	URL                 string `yaml:"url"`
+	Timeout             int    `yaml:"timeout"`
+	EnabledInProcessing bool   `yaml:"enabled_in_processing"`
+}
+
+func (c EnvelopeLookupConfig) Configured() bool {
+	return c.Script != "" || c.URL != ""
 }
 
 // FolderCategoriesFor returns categories that should be auto-applied for a given
@@ -468,6 +488,11 @@ func LoadMainConfig(configDir string) (*Config, error) {
 	}
 	if cfg.Webhook.SweepIntervalSeconds == 0 {
 		cfg.Webhook.SweepIntervalSeconds = 60
+	}
+	if cfg.EnvelopeLookup != nil {
+		if cfg.EnvelopeLookup.Timeout <= 0 {
+			cfg.EnvelopeLookup.Timeout = 10
+		}
 	}
 
 	return &cfg, nil
