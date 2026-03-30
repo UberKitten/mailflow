@@ -55,6 +55,7 @@ func debugRuleMatch(rule config.Rule, msg graph.Message, opts MatchOptions) Debu
 	subject := msg.Subject
 	body := msg.Body
 	from := msg.From
+	fromName := msg.FromName
 	fromDomain := domainFromEmail(from)
 	toList := msg.To
 
@@ -62,6 +63,7 @@ func debugRuleMatch(rule config.Rule, msg graph.Message, opts MatchOptions) Debu
 		subject = strings.ToLower(subject)
 		body = strings.ToLower(body)
 		from = strings.ToLower(from)
+		fromName = strings.ToLower(fromName)
 		fromDomain = strings.ToLower(fromDomain)
 		for i, t := range toList {
 			toList[i] = strings.ToLower(t)
@@ -103,6 +105,59 @@ func debugRuleMatch(rule config.Rule, msg graph.Message, opts MatchOptions) Debu
 			if matchPattern(pattern, fromDomain, true) {
 				matched = true
 				cond.MatchedValues = append(cond.MatchedValues, pattern)
+				break
+			}
+		}
+		cond.Matched = matched
+		result.Conditions = append(result.Conditions, cond)
+		if !matched {
+			result.Matched = false
+		}
+	}
+
+	// from_name condition
+	if len(rule.FromName) > 0 {
+		cond := DebugCondition{
+			Name: "from_name",
+			Got:  fromName,
+			Want: truncateList(rule.FromName, 5),
+		}
+		matched := false
+		for _, pattern := range rule.FromName {
+			checkPattern := pattern
+			if rule.CaseInsensitive {
+				checkPattern = strings.ToLower(checkPattern)
+			}
+			if matchPattern(checkPattern, fromName, rule.CaseInsensitive) {
+				matched = true
+				cond.MatchedValues = append(cond.MatchedValues, pattern)
+				break
+			}
+		}
+		cond.Matched = matched
+		result.Conditions = append(result.Conditions, cond)
+		if !matched {
+			result.Matched = false
+		}
+	}
+
+	// from_name_contains condition
+	if len(rule.FromNameContains) > 0 {
+		cond := DebugCondition{
+			Name: "from_name_contains",
+			Got:  fromName,
+			Want: truncateList(rule.FromNameContains, 5),
+		}
+		matched := false
+		checkName := fromName
+		for _, needle := range rule.FromNameContains {
+			checkNeedle := needle
+			if rule.CaseInsensitive {
+				checkNeedle = strings.ToLower(checkNeedle)
+			}
+			if strings.Contains(checkName, checkNeedle) {
+				matched = true
+				cond.MatchedValues = append(cond.MatchedValues, needle)
 				break
 			}
 		}
