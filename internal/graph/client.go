@@ -27,9 +27,11 @@ var ErrMessageGone = errors.New("message no longer exists")
 
 type Client struct {
 	baseURL           string
+	userPath          string             // "/me" or "/users/{id}" depending on auth mode
 	tokenProvider     *tokenProvider     // built-in OAuth2 (preferred)
 	tokenScript       string             // external script (legacy fallback)
-	certTokenProvider *certTokenProvider // app-only cert auth (for message trace)
+	certTokenProvider *certTokenProvider // app-only cert auth
+	useCertAsPrimary  bool               // when true, certTokenProvider is used for all requests
 	httpClient        *http.Client
 
 	sema                 chan struct{}
@@ -48,8 +50,15 @@ type Client struct {
 }
 
 func NewClient(cfg *config.Config) (*Client, error) {
+	// Determine user path segment: /me for delegated auth, /users/{id} for app-only
+	userPath := "/me"
+	if cfg.Graph.UserID != "" {
+		userPath = "/users/" + cfg.Graph.UserID
+	}
+
 	c := &Client{
 		baseURL:              cfg.Graph.BaseURL,
+		userPath:             userPath,
 		httpClient:           &http.Client{Timeout: 120 * time.Second},
 		maxConcurrent:        cfg.Graph.MaxConcurrentRequests,
 		rangeWorkers:         cfg.Graph.RangeWorkers,
@@ -59,8 +68,36 @@ func NewClient(cfg *config.Config) (*Client, error) {
 		startTime:            time.Now(),
 	}
 
-	// Prefer built-in OAuth2 if client_id + tenant_id are configured
-	if cfg.Graph.ClientID != "" && cfg.Graph.TenantID != "" {
+	// Init cert token provider if configured (used for message trace, or as primary with auth_mode=cert)
+	if cfg.Graph.CertPath != "" {
+		ctp, err := newCertTokenProvider(
+			cfg.Graph.ClientID,
+			cfg.Graph.TenantID,
+			cfg.Graph.CertPath,
+			cfg.Graph.CertPasswordFile,
+			"https://graph.microsoft.com/.default",
+		)
+		if err != nil {
+			if cfg.Graph.AuthMode == "cert" {
+				return nil, fmt.Errorf("cert token provider required by auth_mode=cert but failed: %w", err)
+			}
+			slog.Warn("cert token provider init failed (envelope lookup will be unavailable)", "error", err)
+		} else {
+			c.certTokenProvider = ctp
+		}
+	}
+
+	// Choose primary auth method
+	if cfg.Graph.AuthMode == "cert" {
+		if c.certTokenProvider == nil {
+			return nil, fmt.Errorf("auth_mode=cert requires cert_path and cert_password_file")
+		}
+		if cfg.Graph.UserID == "" {
+			return nil, fmt.Errorf("auth_mode=cert requires user_id (app-only tokens cannot use /me)")
+		}
+		c.useCertAsPrimary = true
+		slog.Info("using certificate auth for all Graph requests", "user", cfg.Graph.UserID)
+	} else if cfg.Graph.ClientID != "" && cfg.Graph.TenantID != "" {
 		tp, err := newTokenProvider(cfg.Graph.ClientID, cfg.Graph.TenantID, cfg.Graph.TokenFile)
 		if err != nil {
 			return nil, fmt.Errorf("init token provider: %w", err)
@@ -72,23 +109,6 @@ func NewClient(cfg *config.Config) (*Client, error) {
 
 	if c.maxConcurrent > 0 {
 		c.sema = make(chan struct{}, c.maxConcurrent)
-	}
-
-	// Optional: cert-based auth for app-only tokens (message trace etc.)
-	if cfg.Graph.CertPath != "" {
-		ctp, err := newCertTokenProvider(
-			cfg.Graph.ClientID,
-			cfg.Graph.TenantID,
-			cfg.Graph.CertPath,
-			cfg.Graph.CertPasswordFile,
-			"https://graph.microsoft.com/.default",
-		)
-		if err != nil {
-			// Non-fatal: cert auth is optional, just log
-			slog.Warn("cert token provider init failed (envelope lookup will be unavailable)", "error", err)
-		} else {
-			c.certTokenProvider = ctp
-		}
 	}
 
 	return c, nil
@@ -163,6 +183,9 @@ type listResponse struct {
 }
 
 func (c *Client) token() (string, error) {
+	if c.useCertAsPrimary && c.certTokenProvider != nil {
+		return c.certTokenProvider.getToken()
+	}
 	if c.tokenProvider != nil {
 		return c.tokenProvider.getToken()
 	}
@@ -296,9 +319,9 @@ func (c *Client) FindFolderIDByPath(ctx context.Context, path string) (string, e
 func (c *Client) findChildFolder(ctx context.Context, parentID, name string) (string, error) {
 	var endpoint string
 	if parentID == "" {
-		endpoint = c.baseURL + "/me/mailFolders"
+		endpoint = c.baseURL + c.userPath + "/mailFolders"
 	} else {
-		endpoint = fmt.Sprintf("%s/me/mailFolders/%s/childFolders", c.baseURL, parentID)
+		endpoint = fmt.Sprintf("%s%s/mailFolders/%s/childFolders", c.baseURL, c.userPath, parentID)
 	}
 
 	reqURL := endpoint + "?$top=200"
@@ -373,7 +396,7 @@ type folderSummary struct {
 }
 
 func (c *Client) listChildFolders(ctx context.Context, parentID string) ([]folderSummary, error) {
-	endpoint := fmt.Sprintf("%s/me/mailFolders/%s/childFolders?$top=200", c.baseURL, parentID)
+	endpoint := fmt.Sprintf("%s%s/mailFolders/%s/childFolders?$top=200", c.baseURL, c.userPath, parentID)
 	resp, err := c.doWithRetry(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
@@ -554,7 +577,7 @@ func (c *Client) StreamMessages(ctx context.Context, folderID string, opts ListO
 			slog.Info("date filtering will be applied client-side (cannot combine with $search)")
 		}
 
-		endpoint := fmt.Sprintf("%s/me/mailFolders/%s/messages?%s", c.baseURL, folderID, params.Encode())
+		endpoint := fmt.Sprintf("%s%s/mailFolders/%s/messages?%s", c.baseURL, c.userPath, folderID, params.Encode())
 		var resultCount int
 		err := c.streamMessagesEndpoint(ctx, endpoint, func(m graphMessage) error {
 			resultCount++
@@ -657,7 +680,7 @@ func (c *Client) StreamMessages(ctx context.Context, folderID string, opts ListO
 		params.Set("$filter", strings.Join(filters, " and "))
 	}
 
-	endpoint := fmt.Sprintf("%s/me/mailFolders/%s/messages?%s", c.baseURL, folderID, params.Encode())
+	endpoint := fmt.Sprintf("%s%s/mailFolders/%s/messages?%s", c.baseURL, c.userPath, folderID, params.Encode())
 	return c.streamMessagesEndpoint(ctx, endpoint, func(m graphMessage) error {
 		return fn(toMessage(m))
 	})
@@ -700,7 +723,7 @@ func (c *Client) shouldBatch(ctx context.Context, folderID string) bool {
 }
 
 func (c *Client) getFolderTotalCount(ctx context.Context, folderID string) (int, error) {
-	endpoint := fmt.Sprintf("%s/me/mailFolders/%s?$select=totalItemCount", c.baseURL, folderID)
+	endpoint := fmt.Sprintf("%s%s/mailFolders/%s?$select=totalItemCount", c.baseURL, c.userPath, folderID)
 	resp, err := c.doWithRetry(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return 0, err
@@ -765,7 +788,7 @@ func (c *Client) getEdgeDate(ctx context.Context, folderID string, filters []str
 	if len(filters) > 0 {
 		params.Set("$filter", strings.Join(filters, " and "))
 	}
-	endpoint := fmt.Sprintf("%s/me/mailFolders/%s/messages?%s", c.baseURL, folderID, params.Encode())
+	endpoint := fmt.Sprintf("%s%s/mailFolders/%s/messages?%s", c.baseURL, c.userPath, folderID, params.Encode())
 	resp, err := c.doWithRetry(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return time.Time{}, false, err
@@ -825,7 +848,7 @@ func (c *Client) listMessagesRange(ctx context.Context, folderID string, basePar
 	if len(filters) > 0 {
 		params.Set("$filter", strings.Join(filters, " and "))
 	}
-	endpoint := fmt.Sprintf("%s/me/mailFolders/%s/messages?%s", c.baseURL, folderID, params.Encode())
+	endpoint := fmt.Sprintf("%s%s/mailFolders/%s/messages?%s", c.baseURL, c.userPath, folderID, params.Encode())
 	var msgs []Message
 	if err := c.streamMessagesEndpoint(ctx, endpoint, func(m graphMessage) error {
 		msgs = append(msgs, toMessage(m))
@@ -910,7 +933,7 @@ func stripHTML(html string) string {
 func (c *Client) MoveMessage(ctx context.Context, msgID, destFolderID string) (string, error) {
 	payload := map[string]string{"destinationId": destFolderID}
 	buf, _ := json.Marshal(payload)
-	endpoint := fmt.Sprintf("%s/me/messages/%s/move", c.baseURL, msgID)
+	endpoint := fmt.Sprintf("%s%s/messages/%s/move", c.baseURL, c.userPath, msgID)
 	resp, err := c.doWithRetry(ctx, http.MethodPost, endpoint, bytes.NewReader(buf))
 	if err != nil {
 		return "", err
@@ -941,7 +964,7 @@ func (c *Client) MoveMessage(ctx context.Context, msgID, destFolderID string) (s
 func (c *Client) GetMessage(ctx context.Context, msgID string) (*Message, error) {
 	params := url.Values{}
 	params.Set("$select", "id,subject,from,toRecipients,body,bodyPreview,isRead,receivedDateTime,parentFolderId,internetMessageHeaders")
-	endpoint := fmt.Sprintf("%s/me/messages/%s?%s", c.baseURL, msgID, params.Encode())
+	endpoint := fmt.Sprintf("%s%s/messages/%s?%s", c.baseURL, c.userPath, msgID, params.Encode())
 
 	resp, err := c.doWithRetry(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -973,7 +996,7 @@ func (c *Client) GetMessageByInternetMessageID(ctx context.Context, messageID st
 	params.Set("$select", "id,subject,from,toRecipients,body,bodyPreview,isRead,receivedDateTime,parentFolderId,internetMessageId,internetMessageHeaders")
 	params.Set("$filter", fmt.Sprintf("internetMessageId eq '%s'", messageID))
 	params.Set("$top", "1")
-	endpoint := fmt.Sprintf("%s/me/messages?%s", c.baseURL, params.Encode())
+	endpoint := fmt.Sprintf("%s%s/messages?%s", c.baseURL, c.userPath, params.Encode())
 
 	resp, err := c.doWithRetry(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -1005,7 +1028,7 @@ func (c *Client) GetMessageByInternetMessageID(ctx context.Context, messageID st
 func (c *Client) GetMessageFolder(ctx context.Context, msgID string) (string, error) {
 	params := url.Values{}
 	params.Set("$select", "parentFolderId")
-	endpoint := fmt.Sprintf("%s/me/messages/%s?%s", c.baseURL, msgID, params.Encode())
+	endpoint := fmt.Sprintf("%s%s/messages/%s?%s", c.baseURL, c.userPath, msgID, params.Encode())
 
 	resp, err := c.doWithRetry(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -1029,7 +1052,7 @@ func (c *Client) GetMessageFolder(ctx context.Context, msgID string) (string, er
 func (c *Client) MarkRead(ctx context.Context, msgID string) error {
 	payload := map[string]bool{"isRead": true}
 	buf, _ := json.Marshal(payload)
-	endpoint := fmt.Sprintf("%s/me/messages/%s", c.baseURL, msgID)
+	endpoint := fmt.Sprintf("%s%s/messages/%s", c.baseURL, c.userPath, msgID)
 	resp, err := c.doWithRetry(ctx, http.MethodPatch, endpoint, bytes.NewReader(buf))
 	if err != nil {
 		return err
@@ -1050,7 +1073,7 @@ func (c *Client) FlagMessage(ctx context.Context, msgID string, status string) e
 		},
 	}
 	buf, _ := json.Marshal(payload)
-	endpoint := fmt.Sprintf("%s/me/messages/%s", c.baseURL, msgID)
+	endpoint := fmt.Sprintf("%s%s/messages/%s", c.baseURL, c.userPath, msgID)
 	resp, err := c.doWithRetry(ctx, http.MethodPatch, endpoint, bytes.NewReader(buf))
 	if err != nil {
 		return err
@@ -1065,7 +1088,7 @@ func (c *Client) FlagMessage(ctx context.Context, msgID string, status string) e
 
 // GetCategories returns the current categories on a message.
 func (c *Client) GetCategories(ctx context.Context, msgID string) ([]string, error) {
-	endpoint := fmt.Sprintf("%s/me/messages/%s?$select=categories", c.baseURL, msgID)
+	endpoint := fmt.Sprintf("%s%s/messages/%s?$select=categories", c.baseURL, c.userPath, msgID)
 	resp, err := c.doWithRetry(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
@@ -1110,7 +1133,7 @@ func (c *Client) SetCategories(ctx context.Context, msgID string, categories []s
 		"categories": categories,
 	}
 	buf, _ := json.Marshal(payload)
-	endpoint := fmt.Sprintf("%s/me/messages/%s", c.baseURL, msgID)
+	endpoint := fmt.Sprintf("%s%s/messages/%s", c.baseURL, c.userPath, msgID)
 	resp, err := c.doWithRetry(ctx, http.MethodPatch, endpoint, bytes.NewReader(buf))
 	if err != nil {
 		return err

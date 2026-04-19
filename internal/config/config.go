@@ -25,7 +25,7 @@ var knownGraphKeys = map[string]bool{
 	"token_script": true, "base_url": true, "max_concurrent_requests": true,
 	"range_workers": true, "large_folder_threshold": true, "range_days": true,
 	"client_id": true, "tenant_id": true, "token_file": true,
-	"cert_path": true, "cert_password_file": true,
+	"cert_path": true, "cert_password_file": true, "auth_mode": true, "user_id": true,
 }
 
 // knownWebhookKeys are the valid keys in the webhook section
@@ -233,9 +233,14 @@ type GraphConfig struct {
 	// External token script (legacy/custom auth)
 	TokenScript string `yaml:"token_script"`
 
-	// Certificate-based app-only auth (optional, for message trace)
+	// Certificate-based app-only auth
 	CertPath         string `yaml:"cert_path"`          // path to PFX certificate
 	CertPasswordFile string `yaml:"cert_password_file"` // file containing cert password
+
+	// Auth mode: "delegated" (default, uses token_file/refresh), "cert" (app-only, uses cert)
+	AuthMode string `yaml:"auth_mode"`
+	// User ID or UPN for app-only auth (replaces /me/ with /users/{user_id}/)
+	UserID string `yaml:"user_id"`
 
 	BaseURL               string `yaml:"base_url"`
 	MaxConcurrentRequests int    `yaml:"max_concurrent_requests"`
