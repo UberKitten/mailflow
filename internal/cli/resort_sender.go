@@ -25,7 +25,7 @@ The sender pattern supports wildcards:
   *news*@*           - any address containing "news"
 
 Examples:
-  mailflow resort-sender Inbox/Posts "*@portlandmercury.com" --apply
+  mailflow resort-sender Posts "*@portlandmercury.com" --apply
   mailflow resort-sender Inbox "newsletter@*" --dry-run
   mailflow resort-sender "Old/To Read" "*@substack.com" --apply --recursive`,
 	Args: cobra.ExactArgs(2),

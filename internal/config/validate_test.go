@@ -44,7 +44,7 @@ func TestValidateRuleSetBroadOverlapWarningCatchall(t *testing.T) {
 	writeFile(t, dir+"/rules.d/10-specific.yaml", `version: 1
 rules:
   - name: specific
-    folder: Inbox/Posts/Science
+    folder: Posts/Science
     from: author@corp.com
 `)
 
@@ -52,7 +52,7 @@ rules:
 	writeFile(t, dir+"/rules.d/45-catchall.yaml", `version: 1
 rules:
   - name: posts-catchall
-    folder: Inbox/Posts
+    folder: Posts
     catchall: true
     from_domain:
       - corp.com
@@ -117,14 +117,14 @@ func TestValidateRuleSetCleanConfig(t *testing.T) {
 	writeFile(t, dir+"/rules.d/10-specific.yaml", `version: 1
 rules:
   - name: specific
-    folder: Inbox/Posts
+    folder: Posts
     from: author@corp.com
 `)
 
 	writeFile(t, dir+"/rules.d/20-broad.yaml", `version: 1
 rules:
   - name: broad
-    folder: Inbox/Posts
+    folder: Posts
     from_domain:
       - other.com
 `)
@@ -150,7 +150,7 @@ func TestValidateRuleSetStrictMode(t *testing.T) {
 	writeFile(t, dir+"/rules.d/10-specific.yaml", `version: 1
 rules:
   - name: specific
-    folder: Inbox/Posts/Science
+    folder: Posts/Science
     from: author@corp.com
 `)
 
@@ -158,7 +158,7 @@ rules:
 	writeFile(t, dir+"/rules.d/45-catchall.yaml", `version: 1
 rules:
   - name: posts-catchall
-    folder: Inbox/Posts
+    folder: Posts
     catchall: true
     from_domain:
       - corp.com

@@ -269,8 +269,8 @@ func (c EnvelopeLookupConfig) Configured() bool {
 }
 
 // FolderCategoriesFor returns categories that should be auto-applied for a given
-// destination folder. A folder_categories entry with folder "Inbox/Posts" matches
-// "Inbox/Posts" and all subfolders like "Inbox/Posts/Tech".
+// destination folder. A folder_categories entry with folder "Posts" matches
+// "Posts" and all subfolders like "Posts/Tech".
 func (c *Config) FolderCategoriesFor(folder string) []string {
 	var cats []string
 	for _, fc := range c.FolderCategories {

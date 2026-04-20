@@ -248,7 +248,7 @@ func TestLoadRulesBodyNotContains(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "rules.d", "rules.yaml"), `version: 1
 rules:
   - name: newsletter
-    folder: Inbox/Posts
+    folder: Posts
     body_contains:
       - "newsletter"
     body_not_contains:
@@ -432,7 +432,7 @@ addresses:
 	writeFile(t, filepath.Join(dir, "rules.d", "rules.yaml"), `version: 1
 rules:
   - name: rss-feeds
-    folder: Inbox/Posts
+    folder: Posts
     to_domain: !ref rss
 `)
 
@@ -674,7 +674,7 @@ rules:
 func TestFolderCategoriesFor(t *testing.T) {
 	cfg := &Config{
 		FolderCategories: []FolderCategory{
-			{Folder: "Inbox/Posts", Categories: []string{"Post"}},
+			{Folder: "Posts", Categories: []string{"Post"}},
 			{Folder: "Inbox/Security", Categories: []string{"Security", "Important"}},
 		},
 	}
@@ -683,13 +683,13 @@ func TestFolderCategoriesFor(t *testing.T) {
 		folder string
 		want   []string
 	}{
-		{"Inbox/Posts", []string{"Post"}},
-		{"Inbox/Posts/Tech", []string{"Post"}},
-		{"Inbox/Posts/Gaming", []string{"Post"}},
+		{"Posts", []string{"Post"}},
+		{"Posts/Tech", []string{"Post"}},
+		{"Posts/Gaming", []string{"Post"}},
 		{"Inbox/Security", []string{"Security", "Important"}},
 		{"Inbox/Promotions", nil},
 		{"Inbox", nil},
-		{"Inbox/PostsExtra", nil}, // not a subfolder of Posts
+		{"PostsExtra", nil}, // not a subfolder of Posts
 	}
 
 	for _, tt := range tests {
@@ -714,16 +714,16 @@ func TestFromNameParsing(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "rules.d", "rules.yaml"), `version: 1
 rules:
   - name: from-name-exact
-    folder: Inbox/Posts
+    folder: Posts
     from_name:
       - "View from the Wing"
       - "One Mile at a Time"
   - name: from-name-contains
-    folder: Inbox/Posts
+    folder: Posts
     from_name_contains:
       - "Newsletter"
   - name: from-name-single
-    folder: Inbox/Posts
+    folder: Posts
     from_name: "Single Value"
 `)
 

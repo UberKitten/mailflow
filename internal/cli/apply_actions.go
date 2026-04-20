@@ -21,8 +21,8 @@ var applyActionsCmd = &cobra.Command{
 messages without moving them. Useful for retroactive labeling.
 
 Examples:
-  mailflow apply-actions "Inbox/Posts/Gaming" --sender "*@aftermath.site"
-  mailflow apply-actions "Inbox/Posts/Politics" --rule posts-politics-currentaffairs
+  mailflow apply-actions "Posts/Gaming" --sender "*@aftermath.site"
+  mailflow apply-actions "Posts/Politics" --rule posts-politics-currentaffairs
   mailflow apply-actions --message-id <message-id> --rule posts-politics-currentaffairs
 `,
 	RunE: runApplyActions,
