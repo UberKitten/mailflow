@@ -84,7 +84,7 @@ func TestValidateRuleSetNonCatchallOverlapNoWarning(t *testing.T) {
 	writeFile(t, dir+"/rules.d/08-overrides.yaml", `version: 1
 rules:
   - name: specific-override
-    folder: Inbox/Promotions
+    folder: Promotions
     from: no-reply@github.com
 `)
 

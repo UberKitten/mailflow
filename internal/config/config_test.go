@@ -587,7 +587,7 @@ func TestHeaderContainsParsing(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "rules.d", "rules.yaml"), `version: 1
 rules:
   - name: header-list-test
-    folder: Inbox/Lists
+    folder: Lists
     header_contains:
       List-Id:
         - "oss-security.lists.openwall.com"
@@ -687,7 +687,7 @@ func TestFolderCategoriesFor(t *testing.T) {
 		{"Posts/Tech", []string{"Post"}},
 		{"Posts/Gaming", []string{"Post"}},
 		{"Inbox/Security", []string{"Security", "Important"}},
-		{"Inbox/Promotions", nil},
+		{"Promotions", nil},
 		{"Inbox", nil},
 		{"PostsExtra", nil}, // not a subfolder of Posts
 	}
