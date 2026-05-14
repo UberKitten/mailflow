@@ -613,6 +613,31 @@ func (c *Client) StreamMessages(ctx context.Context, folderID string, opts ListO
 		return err
 	}
 
+	// Sender-filter path: when filtering by from/emailAddress/address, Graph rejects
+	// $orderby on a different property (receivedDateTime) with InefficientFilter / 400.
+	// Per Graph docs: properties in $orderby must also appear in $filter, in the same order.
+	// Drop $orderby and skip date-range batching — the sender filter narrows results
+	// enough that simple pagination is fine. Date constraints are still applied server-side
+	// as additional $filter clauses (filter-only is fine without orderby).
+	// See: https://learn.microsoft.com/graph/api/user-list-messages#using-filter-and-orderby-in-the-same-query
+	if senderFilter != "" {
+		params.Del("$orderby")
+		filters := append([]string{}, filtersNoDate...)
+		if !sinceTime.IsZero() {
+			filters = append(filters, fmt.Sprintf("receivedDateTime ge %s", sinceTime.Format(time.RFC3339)))
+		}
+		if !beforeTime.IsZero() {
+			filters = append(filters, fmt.Sprintf("receivedDateTime lt %s", beforeTime.Format(time.RFC3339)))
+		}
+		if len(filters) > 0 {
+			params.Set("$filter", strings.Join(filters, " and "))
+		}
+		endpoint := fmt.Sprintf("%s%s/mailFolders/%s/messages?%s", c.baseURL, c.userPath, folderID, params.Encode())
+		return c.streamMessagesEndpoint(ctx, endpoint, func(m graphMessage) error {
+			return fn(toMessage(m))
+		})
+	}
+
 	// Standard path: use $filter (batched or simple pagination)
 	if c.shouldBatch(ctx, folderID) {
 		start, end, ok, err := c.getDateBounds(ctx, folderID, filtersNoDate, sinceTime, beforeTime)
