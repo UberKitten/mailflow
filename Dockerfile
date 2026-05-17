@@ -26,5 +26,11 @@ COPY --from=builder /app/scripts /app/scripts
 # Config directory
 VOLUME /config
 
+# Run as non-root so bind-mounted host dirs get the expected ownership
+# (uid 1000) instead of root.
+RUN adduser -D -u 1000 -h /home/mailflow mailflow && \
+    chown -R mailflow:mailflow /app
+USER mailflow
+
 ENTRYPOINT ["/app/mailflow", "--config-dir=/config"]
 CMD ["webhook"]
