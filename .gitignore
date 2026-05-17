@@ -12,3 +12,5 @@ docker-compose.override.yml
 # Config directory (use a separate repo or MAILFLOW_CONFIG_DIR)
 config/
 !config/config.yaml.example
+compose.yaml
+compose.override.yaml
