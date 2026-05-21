@@ -1139,7 +1139,11 @@ func (c *Client) RemoveCategory(ctx context.Context, msgID string, category stri
 	if err != nil {
 		return nil, err
 	}
-	var remaining []string
+	// Initialize as non-nil so JSON marshals to [] rather than null when
+	// the removed category was the only one present. Microsoft Graph rejects
+	// PATCH {"categories": null} with 400 RequestBodyRead even though the
+	// schema declares the collection nullable.
+	remaining := []string{}
 	for _, cat := range current {
 		if cat != category {
 			remaining = append(remaining, cat)
@@ -1154,6 +1158,15 @@ func (c *Client) RemoveCategory(ctx context.Context, msgID string, category stri
 // SetCategories sets the categories on a message.
 // Categories are colored labels in Outlook (e.g., "Red Category", "Blue Category", or custom names).
 func (c *Client) SetCategories(ctx context.Context, msgID string, categories []string) error {
+	// Coerce a nil slice to an empty slice so it marshals as [] not null.
+	// Microsoft Graph PATCH /messages/{id} rejects {"categories": null} with
+	// 400 RequestBodyRead ("A null value was found for the property named
+	// 'categories'..."), but accepts {"categories": []} to clear all
+	// categories. The collection is allowed to *contain* nulls but not
+	// to *be* null.
+	if categories == nil {
+		categories = []string{}
+	}
 	payload := map[string]interface{}{
 		"categories": categories,
 	}
