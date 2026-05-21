@@ -3,6 +3,7 @@ package graph
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -148,6 +149,67 @@ func TestListMessagesAPIFailure(t *testing.T) {
 	_, err := client.ListMessages(context.Background(), "folder", ListOptions{})
 	if err == nil {
 		t.Fatalf("expected list messages error")
+	}
+}
+
+// TestSetCategoriesEmptySerializesAsArray guards against regressing the nil
+// slice -> JSON null bug. Microsoft Graph PATCH /messages/{id} rejects
+// {"categories": null} with 400 RequestBodyRead even though the schema says
+// the field is nullable. The empty array {"categories": []} is accepted and
+// is the correct way to clear all categories.
+func TestSetCategoriesEmptySerializesAsArray(t *testing.T) {
+	cases := []struct {
+		name  string
+		input []string
+	}{
+		{"nil_slice", nil},
+		{"empty_slice", []string{}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotBody []byte
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPatch {
+					t.Errorf("expected PATCH, got %s", r.Method)
+				}
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatalf("read body: %v", err)
+				}
+				gotBody = body
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer server.Close()
+
+			dir := t.TempDir()
+			tokenScript := writeScript(t, dir)
+			client := newTestClient(t, server.URL, tokenScript)
+			client.httpClient = server.Client()
+
+			if err := client.SetCategories(context.Background(), "msg-1", tc.input); err != nil {
+				t.Fatalf("SetCategories: %v", err)
+			}
+
+			var decoded map[string]interface{}
+			if err := json.Unmarshal(gotBody, &decoded); err != nil {
+				t.Fatalf("unmarshal request body: %v (body=%s)", err, string(gotBody))
+			}
+			cats, ok := decoded["categories"]
+			if !ok {
+				t.Fatalf("categories field missing from request body: %s", string(gotBody))
+			}
+			if cats == nil {
+				t.Fatalf("categories serialized as null, want []; body=%s", string(gotBody))
+			}
+			arr, ok := cats.([]interface{})
+			if !ok {
+				t.Fatalf("categories not an array, got %T; body=%s", cats, string(gotBody))
+			}
+			if len(arr) != 0 {
+				t.Fatalf("expected empty array, got %v", arr)
+			}
+		})
 	}
 }
 
