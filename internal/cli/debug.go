@@ -26,8 +26,8 @@ Verbs:
   process   Full processing: move + label + notify
 
 Flags:
-  --clear-category <name>   Remove an Outlook category before move/process
-                            (e.g. --clear-category Missort)
+  --clear-category <name>   Remove one exact Outlook category after a successful
+                            move/process (e.g. --clear-category Missort)
 
 Examples:
   mailflow debug '<message-id>'              # show matches
@@ -180,21 +180,15 @@ func runDebug(cmd *cobra.Command, args []string) error {
 		}
 
 	case "move":
-		// Move the email
-		if result.MatchedRule != nil {
-			// Clear category before move (ID changes after move, categories travel with message)
-			if clearCategory != "" {
-				remaining, err := client.RemoveCategory(ctx, msg.ID, clearCategory)
-				if err != nil {
-					fmt.Printf("Warning: failed to clear category %q: %v\n", clearCategory, err)
-				} else {
-					fmt.Printf("Cleared category %q (remaining: %v)\n", clearCategory, remaining)
-				}
-			}
-			if err := env.ProcessSingle(ctx, msg.ID); err != nil {
-				return fmt.Errorf("failed to move: %w", err)
-			}
-			fmt.Printf("Result: Moved to %s (rule: %s)\n", result.MatchedRule.Folder, result.MatchedRule.Source)
+		processed, remaining, err := processAndClearCategory(ctx, env, client, msg.ID, clearCategory)
+		if err != nil {
+			return fmt.Errorf("failed to move: %w", err)
+		}
+		if clearCategory != "" {
+			fmt.Printf("Cleared category %q (remaining: %v)\n", clearCategory, remaining)
+		}
+		if processed.Moved {
+			fmt.Printf("Result: Moved to %s (rule: %s)\n", processed.MatchedRule.Folder, processed.MatchedRule.Source)
 		} else {
 			fmt.Println("Result: No rule matched, not moved")
 		}
@@ -221,27 +215,69 @@ func runDebug(cmd *cobra.Command, args []string) error {
 		}
 
 	case "process":
-		// Full processing: move + labels + notify
-		// Clear category before move (ID changes after move, categories travel with message)
-		if clearCategory != "" && result.MatchedRule != nil {
-			remaining, err := client.RemoveCategory(ctx, msg.ID, clearCategory)
-			if err != nil {
-				fmt.Printf("Warning: failed to clear category %q: %v\n", clearCategory, err)
-			} else {
-				fmt.Printf("Cleared category %q (remaining: %v)\n", clearCategory, remaining)
-			}
-		}
-		if err := env.ProcessSingle(ctx, msg.ID); err != nil {
+		processed, remaining, err := processAndClearCategory(ctx, env, client, msg.ID, clearCategory)
+		if err != nil {
 			return fmt.Errorf("failed to process: %w", err)
 		}
-		if result.MatchedRule != nil {
-			fmt.Printf("Result: Processed (moved to %s)\n", result.MatchedRule.Folder)
+		if clearCategory != "" {
+			fmt.Printf("Cleared category %q (remaining: %v)\n", clearCategory, remaining)
+		}
+		if processed.Moved {
+			fmt.Printf("Result: Processed (moved to %s)\n", processed.MatchedRule.Folder)
 		} else {
 			fmt.Println("Result: Processed (no move, applied actions)")
 		}
 	}
 
 	return nil
+}
+
+type exactMessageProcessor interface {
+	ProcessMessage(context.Context, string) (engine.ProcessResult, error)
+}
+
+type exactCategoryRemover interface {
+	RemoveCategory(context.Context, string, string) ([]string, error)
+}
+
+func processAndClearCategory(
+	ctx context.Context,
+	processor exactMessageProcessor,
+	remover exactCategoryRemover,
+	messageID string,
+	category string,
+) (engine.ProcessResult, []string, error) {
+	processed, err := processor.ProcessMessage(ctx, messageID)
+	if err != nil {
+		return engine.ProcessResult{}, nil, fmt.Errorf("process exact message %q: %w", messageID, err)
+	}
+	if category == "" {
+		return processed, nil, nil
+	}
+	if processed.MatchedRule == nil {
+		return processed, nil, fmt.Errorf(
+			"process exact message %q: no sorting rule matched; message was not moved",
+			messageID,
+		)
+	}
+	if !processed.Moved {
+		return processed, nil, fmt.Errorf(
+			"process exact message %q: rule %q matched but message was not moved",
+			messageID,
+			processed.MatchedRule.Name,
+		)
+	}
+
+	remaining, err := remover.RemoveCategory(ctx, processed.MessageID, category)
+	if err != nil {
+		return processed, nil, fmt.Errorf(
+			"remove category %q from processed message %q: %w",
+			category,
+			processed.MessageID,
+			err,
+		)
+	}
+	return processed, remaining, nil
 }
 
 func formatConditionValue(value string, values []string) string {
@@ -274,4 +310,3 @@ func formatValue(value string) string {
 	}
 	return value
 }
-

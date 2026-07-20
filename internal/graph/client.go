@@ -1132,6 +1132,37 @@ func (c *Client) GetCategories(ctx context.Context, msgID string) ([]string, err
 	return result.Categories, nil
 }
 
+// AddCategories merges categories into the message's existing categories.
+// Existing categories retain their order and are never removed.
+func (c *Client) AddCategories(ctx context.Context, msgID string, categories []string) ([]string, error) {
+	current, err := c.GetCategories(ctx, msgID)
+	if err != nil {
+		return nil, err
+	}
+
+	seen := make(map[string]struct{}, len(current)+len(categories))
+	merged := make([]string, 0, len(current)+len(categories))
+	for _, category := range current {
+		if _, ok := seen[category]; ok {
+			continue
+		}
+		seen[category] = struct{}{}
+		merged = append(merged, category)
+	}
+	for _, category := range categories {
+		if _, ok := seen[category]; ok {
+			continue
+		}
+		seen[category] = struct{}{}
+		merged = append(merged, category)
+	}
+
+	if err := c.SetCategories(ctx, msgID, merged); err != nil {
+		return nil, err
+	}
+	return merged, nil
+}
+
 // RemoveCategory removes a single category from a message, preserving others.
 // Returns the remaining categories.
 func (c *Client) RemoveCategory(ctx context.Context, msgID string, category string) ([]string, error) {

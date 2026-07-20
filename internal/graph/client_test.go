@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"mailflow/internal/config"
@@ -212,6 +213,111 @@ func TestSetCategoriesEmptySerializesAsArray(t *testing.T) {
 		})
 	}
 }
+func TestRemoveCategoryRemovesOnlyExactMatchAndPreservesOthers(t *testing.T) {
+	var patched []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			_ = json.NewEncoder(w).Encode(map[string][]string{
+				"categories": {
+					"Keep",
+					"Sort → Inbox/Security",
+					"Sort → Inbox",
+					"sort → Inbox/Security",
+				},
+			})
+		case http.MethodPatch:
+			var payload struct {
+				Categories []string `json:"categories"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode PATCH: %v", err)
+			}
+			patched = payload.Categories
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+	}))
+	defer server.Close()
+
+	tokenScript := writeScript(t, t.TempDir())
+	client := newTestClient(t, server.URL, tokenScript)
+	client.httpClient = server.Client()
+
+	remaining, err := client.RemoveCategory(context.Background(), "moved-id", "Sort → Inbox/Security")
+	if err != nil {
+		t.Fatalf("RemoveCategory: %v", err)
+	}
+	want := []string{"Keep", "Sort → Inbox", "sort → Inbox/Security"}
+	if len(remaining) != len(want) {
+		t.Fatalf("remaining = %v, want %v", remaining, want)
+	}
+	for i := range want {
+		if remaining[i] != want[i] {
+			t.Fatalf("remaining[%d] = %q, want %q", i, remaining[i], want[i])
+		}
+	}
+	if len(patched) != len(want) {
+		t.Fatalf("PATCH categories = %v, want %v", patched, want)
+	}
+	for i := range want {
+		if patched[i] != want[i] {
+			t.Fatalf("PATCH categories[%d] = %q, want %q", i, patched[i], want[i])
+		}
+	}
+}
+
+func TestAddThenRemoveCategoryPreservesUnrelatedAndRuleCategories(t *testing.T) {
+	state := []string{"Keep", "Sort → Promotions"}
+	var patches [][]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			_ = json.NewEncoder(w).Encode(map[string][]string{"categories": state})
+		case http.MethodPatch:
+			var payload struct {
+				Categories []string `json:"categories"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode PATCH: %v", err)
+			}
+			state = append([]string(nil), payload.Categories...)
+			patches = append(patches, append([]string(nil), state...))
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+	}))
+	defer server.Close()
+
+	tokenScript := writeScript(t, t.TempDir())
+	client := newTestClient(t, server.URL, tokenScript)
+	client.httpClient = server.Client()
+	ctx := context.Background()
+
+	afterAdd, err := client.AddCategories(ctx, "moved-id", []string{"Rule Category", "Keep"})
+	if err != nil {
+		t.Fatalf("AddCategories: %v", err)
+	}
+	wantAfterAdd := []string{"Keep", "Sort → Promotions", "Rule Category"}
+	if !reflect.DeepEqual(afterAdd, wantAfterAdd) {
+		t.Fatalf("after AddCategories = %v, want %v", afterAdd, wantAfterAdd)
+	}
+
+	afterRemove, err := client.RemoveCategory(ctx, "moved-id", "Sort → Promotions")
+	if err != nil {
+		t.Fatalf("RemoveCategory: %v", err)
+	}
+	wantAfterRemove := []string{"Keep", "Rule Category"}
+	if !reflect.DeepEqual(afterRemove, wantAfterRemove) {
+		t.Fatalf("after RemoveCategory = %v, want %v", afterRemove, wantAfterRemove)
+	}
+	wantPatches := [][]string{wantAfterAdd, wantAfterRemove}
+	if !reflect.DeepEqual(patches, wantPatches) {
+		t.Fatalf("PATCH sequence = %v, want %v", patches, wantPatches)
+	}
+}
 
 func TestSenderPatternToFilter(t *testing.T) {
 	tests := []struct {
@@ -233,10 +339,10 @@ func TestSenderPatternToFilter(t *testing.T) {
 		{"newsletter@*", "", "from:newsletter@"},
 
 		// Complex wildcard patterns — extracts best search term
-		{"*news*@domain.com", "", "from:@domain.com"},        // @domain.com is longest
-		{"*newsletter*@*", "", "from:newsletter"},            // newsletter is longest
-		{"user*@domain.com", "", "from:@domain.com"},         // @domain.com is longest
-		{"*-notifications@*", "", "from:-notifications@"},    // -notifications@ is longest
+		{"*news*@domain.com", "", "from:@domain.com"},     // @domain.com is longest
+		{"*newsletter*@*", "", "from:newsletter"},         // newsletter is longest
+		{"user*@domain.com", "", "from:@domain.com"},      // @domain.com is longest
+		{"*-notifications@*", "", "from:-notifications@"}, // -notifications@ is longest
 
 		// Pattern that can't be narrowed — returns empty (must scan all)
 		{"*@*", "", ""},

@@ -706,6 +706,30 @@ func TestFolderCategoriesFor(t *testing.T) {
 		})
 	}
 }
+func TestRuleSetDestinations(t *testing.T) {
+	rules := &RuleSet{
+		Rules: []Rule{
+			{Folder: "Posts/Tech"},
+			{Folder: "Inbox/Security"},
+			{Folder: "Promotions"},
+			{Folder: "Posts/Tech"},
+			{NotifyOnly: true},
+			{Folder: "Inbox"},
+			{Folder: "Archive"},
+		},
+	}
+
+	want := []string{"Inbox", "Inbox/Security", "Posts/Tech", "Promotions"}
+	got := rules.Destinations()
+	if len(got) != len(want) {
+		t.Fatalf("Destinations() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("Destinations()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
 
 func TestFromNameParsing(t *testing.T) {
 	dir := t.TempDir()

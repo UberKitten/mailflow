@@ -1,6 +1,13 @@
 package engine
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -533,9 +540,9 @@ func TestMatchFromDomainCaseInsensitive(t *testing.T) {
 		want bool
 	}{
 		{"user@rxlocal.com", true},
-		{"user@RxLocal.com", true},   // Mixed case domain should match
-		{"user@RXLOCAL.COM", true},   // All caps should match
-		{"user@RxLocal.COM", true},   // Mixed case should match
+		{"user@RxLocal.com", true}, // Mixed case domain should match
+		{"user@RXLOCAL.COM", true}, // All caps should match
+		{"user@RxLocal.COM", true}, // Mixed case should match
 		{"user@other.com", false},
 	}
 
@@ -1014,5 +1021,170 @@ func TestMatchFromNameContainsMultiple(t *testing.T) {
 	rule3 := Match(rules, msg3, MatchOptions{})
 	if rule3 != nil {
 		t.Fatalf("expected no match when neither pattern present, got %v", rule3)
+	}
+}
+
+func newEngineTestClient(t *testing.T, baseURL string) *graph.Client {
+	t.Helper()
+	tokenScript := filepath.Join(t.TempDir(), "token.sh")
+	if err := os.WriteFile(tokenScript, []byte("#!/bin/sh\nprintf test-token\n"), 0o755); err != nil {
+		t.Fatalf("write token script: %v", err)
+	}
+	client, err := graph.NewClient(&config.Config{
+		Graph: config.GraphConfig{
+			BaseURL:     baseURL,
+			TokenScript: tokenScript,
+		},
+	})
+	if err != nil {
+		t.Fatalf("graph.NewClient: %v", err)
+	}
+	return client
+}
+
+func TestProcessMessageProcessesAnyFolderAndReturnsMovedID(t *testing.T) {
+	var events []string
+	var destinationID string
+	var fullMessageRequested bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/me/messages/original-id":
+			events = append(events, "get-message")
+			fullMessageRequested = strings.Contains(r.URL.Query().Get("$select"), "subject")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":      "original-id",
+				"subject": "Special offer",
+				"from": map[string]interface{}{
+					"emailAddress": map[string]string{"address": "deals@example.com"},
+				},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/me/mailFolders":
+			events = append(events, "find-destination")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"value": []map[string]string{{
+					"id":          "promotions-id",
+					"displayName": "Promotions",
+				}},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/me/messages/original-id/move":
+			events = append(events, "move")
+			var payload map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Errorf("decode move request: %v", err)
+			}
+			destinationID = payload["destinationId"]
+			_ = json.NewEncoder(w).Encode(map[string]string{"id": "moved-id"})
+		default:
+			t.Errorf("unexpected request: %s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	cfg := &config.Config{}
+	rules := &config.RuleSet{Rules: []config.Rule{{
+		Name:     "promotions",
+		Folder:   "Promotions",
+		Catchall: true,
+	}}}
+	eng := New(cfg, rules, newEngineTestClient(t, server.URL))
+
+	result, err := eng.ProcessMessage(context.Background(), "original-id")
+	if err != nil {
+		t.Fatalf("ProcessMessage: %v", err)
+	}
+	if !fullMessageRequested {
+		t.Fatal("ProcessMessage requested only folder metadata instead of processing from the current folder")
+	}
+	if result.MessageID != "moved-id" || !result.Moved {
+		t.Fatalf("result = %+v, want moved ID and Moved=true", result)
+	}
+	if result.MatchedRule == nil || result.MatchedRule.Folder != "Promotions" {
+		t.Fatalf("matched rule = %+v, want Promotions", result.MatchedRule)
+	}
+	if destinationID != "promotions-id" {
+		t.Fatalf("destinationId = %q, want promotions-id", destinationID)
+	}
+	wantEvents := []string{"get-message", "find-destination", "move"}
+	if len(events) != len(wantEvents) {
+		t.Fatalf("events = %v, want %v", events, wantEvents)
+	}
+	for i := range wantEvents {
+		if events[i] != wantEvents[i] {
+			t.Fatalf("events[%d] = %q, want %q", i, events[i], wantEvents[i])
+		}
+	}
+}
+
+func TestProcessSingleStillSkipsMessagesOutsideWatchFolder(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Method != http.MethodGet || r.URL.Path != "/me/messages/message-id" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		if got := r.URL.Query().Get("$select"); got != "parentFolderId" {
+			t.Errorf("$select = %q, want parentFolderId", got)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"parentFolderId": "other-folder"})
+	}))
+	defer server.Close()
+
+	eng := New(&config.Config{}, &config.RuleSet{}, newEngineTestClient(t, server.URL))
+	eng.SetWatchFolder("Inbox/Unsorted", "watch-folder")
+	if err := eng.ProcessSingle(context.Background(), "message-id"); err != nil {
+		t.Fatalf("ProcessSingle: %v", err)
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want one folder check and no processing", requests)
+	}
+}
+
+func TestCategoryActionPreservesExistingUntilExactCorrectionRemoved(t *testing.T) {
+	state := []string{"Keep", "Sort → Promotions"}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			_ = json.NewEncoder(w).Encode(map[string][]string{"categories": state})
+		case http.MethodPatch:
+			var payload struct {
+				Categories []string `json:"categories"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode PATCH: %v", err)
+			}
+			state = append([]string(nil), payload.Categories...)
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+	}))
+	defer server.Close()
+
+	client := newEngineTestClient(t, server.URL)
+	eng := New(&config.Config{}, &config.RuleSet{}, client)
+	rule := &config.Rule{
+		Name:   "promotions",
+		Folder: "Promotions",
+		OnMatch: &config.OnMatch{
+			Categories: []string{"Rule Category"},
+		},
+	}
+
+	eng.ApplyOnMatch(context.Background(), "moved-id", graph.Message{}, rule, OnMatchOptions{})
+	wantAfterAction := []string{"Keep", "Sort → Promotions", "Rule Category"}
+	if !reflect.DeepEqual(state, wantAfterAction) {
+		t.Fatalf("categories after action = %v, want %v", state, wantAfterAction)
+	}
+
+	remaining, err := client.RemoveCategory(context.Background(), "moved-id", "Sort → Promotions")
+	if err != nil {
+		t.Fatalf("RemoveCategory: %v", err)
+	}
+	wantAfterCorrection := []string{"Keep", "Rule Category"}
+	if !reflect.DeepEqual(remaining, wantAfterCorrection) {
+		t.Fatalf("categories after correction clear = %v, want %v", remaining, wantAfterCorrection)
 	}
 }

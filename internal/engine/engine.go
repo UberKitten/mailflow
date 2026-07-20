@@ -118,15 +118,21 @@ func (e *Engine) ProcessOnce(ctx context.Context, since time.Duration) error {
 	return nil
 }
 
-// ProcessSingle processes a single message by ID (used by webhook)
+// ProcessResult describes the outcome of processing one exact message.
+type ProcessResult struct {
+	MessageID   string
+	Moved       bool
+	MatchedRule *config.Rule
+}
+
+// ProcessSingle processes a webhook message only when it is still in the
+// configured watch folder.
 func (e *Engine) ProcessSingle(ctx context.Context, messageID string) error {
-	// Check if message is in the watch folder
 	folderID, err := e.client.GetMessageFolder(ctx, messageID)
 	if err != nil {
 		return fmt.Errorf("get message folder: %w", err)
 	}
 
-	// Determine expected folder - use watch folder if set, otherwise Inbox
 	expectedFolderID := e.watchFolderID
 	expectedFolderName := e.watchFolder
 	if expectedFolderID == "" {
@@ -137,64 +143,61 @@ func (e *Engine) ProcessSingle(ctx context.Context, messageID string) error {
 		expectedFolderName = "Inbox"
 	}
 
-	// Only process if in expected folder
 	if folderID != expectedFolderID {
 		slog.Debug("message not in watch folder, skipping", "messageId", messageID, "folder", folderID, "expected", expectedFolderName)
 		return nil
 	}
 
-	// Get full message
+	_, err = e.ProcessMessage(ctx, messageID)
+	if errors.Is(err, graph.ErrMessageGone) {
+		slog.Warn("message gone before move", "id", messageID)
+		return nil
+	}
+	return err
+}
+
+// ProcessMessage processes one exact message regardless of its current folder.
+// The returned ID is the post-move Graph ID, or the original ID when no rule
+// matches and the message remains in place.
+func (e *Engine) ProcessMessage(ctx context.Context, messageID string) (ProcessResult, error) {
 	msg, err := e.client.GetMessage(ctx, messageID)
 	if err != nil {
-		return fmt.Errorf("get message: %w", err)
+		return ProcessResult{}, fmt.Errorf("get message: %w", err)
 	}
 
 	e.maybeLookupEnvelopeRecipient(ctx, msg)
 
-	// Collect notify_only rules before moving (match against original message)
 	notifyRules := MatchNotifyOnly(e.rules, *msg)
-
-	// Match against sorting rules
 	rule := Match(e.rules, *msg, MatchOptions{})
 	if rule == nil {
-		// No sorting rule — fire notify_only with original ID (message stays put)
 		for _, notifyRule := range notifyRules {
 			slog.Info("notify_only matched", "id", messageID, "from", msg.From, "subject", msg.Subject, "rule", notifyRule.Name)
 			e.executeOnMatch(ctx, messageID, *msg, notifyRule, OnMatchOptions{AllowPushover: true})
 		}
 		slog.Debug("no rule matched", "messageId", messageID, "from", msg.From, "subject", msg.Subject)
-		return nil
+		return ProcessResult{MessageID: messageID}, nil
 	}
 
-	// Move to destination folder
 	destID, err := e.client.FindFolderIDByPath(ctx, rule.Folder)
 	if err != nil {
-		return fmt.Errorf("find dest folder: %w", err)
+		return ProcessResult{}, fmt.Errorf("find dest folder: %w", err)
 	}
 
 	newMsgID, err := e.client.MoveMessage(ctx, messageID, destID)
 	if err != nil {
-		if errors.Is(err, graph.ErrMessageGone) {
-			slog.Warn("message gone before move", "id", messageID, "subject", msg.Subject)
-			return nil
-		}
-		return fmt.Errorf("move message: %w", err)
+		return ProcessResult{}, fmt.Errorf("move message: %w", err)
 	}
 
 	slog.Info("moved", "id", newMsgID, "from", msg.From, "subject", msg.Subject, "rule", rule.Name, "folder", rule.Folder)
-
-	// Execute on_match actions with new message ID (ID changes on move in Graph API)
 	msg.ID = newMsgID
 
-	// Fire notify_only rules AFTER move so ${message_id} reflects the new ID
 	for _, notifyRule := range notifyRules {
 		slog.Info("notify_only matched", "id", newMsgID, "from", msg.From, "subject", msg.Subject, "rule", notifyRule.Name)
 		e.executeOnMatch(ctx, newMsgID, *msg, notifyRule, OnMatchOptions{AllowPushover: true})
 	}
 
 	e.executeOnMatch(ctx, newMsgID, *msg, rule, OnMatchOptions{AllowPushover: true})
-
-	return nil
+	return ProcessResult{MessageID: newMsgID, Moved: true, MatchedRule: rule}, nil
 }
 
 func (e *Engine) maybeLookupEnvelopeRecipient(ctx context.Context, msg *graph.Message) {
@@ -287,10 +290,10 @@ func (e *Engine) executeOnMatch(ctx context.Context, msgID string, msg graph.Mes
 	}
 
 	if len(mergedCategories) > 0 {
-		if err := e.client.SetCategories(ctx, msgID, mergedCategories); err != nil {
-			slog.Warn("set categories failed", "id", msgID, "categories", mergedCategories, "error", err)
+		if _, err := e.client.AddCategories(ctx, msgID, mergedCategories); err != nil {
+			slog.Warn("add categories failed", "id", msgID, "categories", mergedCategories, "error", err)
 		} else {
-			slog.Debug("set categories", "id", msgID, "categories", mergedCategories)
+			slog.Debug("added categories", "id", msgID, "categories", mergedCategories)
 		}
 	}
 

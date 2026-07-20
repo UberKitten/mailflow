@@ -294,6 +294,27 @@ type RuleSet struct {
 	Folders map[string]string // folder key -> path
 }
 
+// Destinations returns the canonical folder paths that a correction may target.
+// Inbox is always available as the no-matching-rule catchall. Archive is an
+// engine-only synthetic target and is never offered as a correction destination.
+func (r *RuleSet) Destinations() []string {
+	destinations := map[string]struct{}{"Inbox": {}}
+	if r != nil {
+		for _, rule := range r.Rules {
+			if rule.Folder != "" && rule.Folder != "Archive" {
+				destinations[rule.Folder] = struct{}{}
+			}
+		}
+	}
+
+	result := make([]string, 0, len(destinations))
+	for destination := range destinations {
+		result = append(result, destination)
+	}
+	sort.Strings(result)
+	return result
+}
+
 // Rule definition.
 type Rule struct {
 	Name               string

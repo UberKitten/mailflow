@@ -34,6 +34,7 @@ func init() {
 	rootCmd.AddCommand(configCmd)
 	rootCmd.AddCommand(reloadCmd)
 	rootCmd.AddCommand(validateCmd)
+	rootCmd.AddCommand(destinationsCmd)
 }
 
 func initLogging() {
