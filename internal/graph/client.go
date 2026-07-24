@@ -27,7 +27,7 @@ var ErrMessageGone = errors.New("message no longer exists")
 
 type Client struct {
 	baseURL           string
-	userPath          string             // "/me" or "/users/{id}" depending on auth mode
+	mailboxPrincipal  string             // "me" or "users/{escaped-id}" depending on auth mode
 	tokenProvider     *tokenProvider     // built-in OAuth2 (preferred)
 	tokenScript       string             // external script (legacy fallback)
 	certTokenProvider *certTokenProvider // app-only cert auth
@@ -50,15 +50,14 @@ type Client struct {
 }
 
 func NewClient(cfg *config.Config) (*Client, error) {
-	// Determine user path segment: /me for delegated auth, /users/{id} for app-only
-	userPath := "/me"
-	if cfg.Graph.UserID != "" {
-		userPath = "/users/" + cfg.Graph.UserID
+	mailboxPrincipal, err := graphMailboxPrincipal(cfg.Graph.AuthMode, cfg.Graph.UserID)
+	if err != nil {
+		return nil, err
 	}
 
 	c := &Client{
-		baseURL:              cfg.Graph.BaseURL,
-		userPath:             userPath,
+		baseURL:              strings.TrimRight(cfg.Graph.BaseURL, "/"),
+		mailboxPrincipal:     mailboxPrincipal,
 		httpClient:           &http.Client{Timeout: 120 * time.Second},
 		maxConcurrent:        cfg.Graph.MaxConcurrentRequests,
 		rangeWorkers:         cfg.Graph.RangeWorkers,
@@ -112,6 +111,36 @@ func NewClient(cfg *config.Config) (*Client, error) {
 	}
 
 	return c, nil
+}
+
+func graphMailboxPrincipal(authMode, userID string) (string, error) {
+	if authMode != "cert" {
+		return "me", nil
+	}
+	if userID == "" {
+		return "", fmt.Errorf("auth_mode=cert requires user_id (app-only tokens cannot use /me)")
+	}
+	return "users/" + url.PathEscape(userID), nil
+}
+
+// MailboxResource returns a Graph resource rooted at the authenticated mailbox.
+// Delegated auth uses "me"; app-only auth uses the configured user mailbox.
+func (c *Client) MailboxResource(resource string) string {
+	resource = strings.TrimLeft(resource, "/")
+	if resource == "" {
+		return c.mailboxPrincipal
+	}
+	return c.mailboxPrincipal + "/" + resource
+}
+
+// MailFolderMessagesResource returns the subscription resource for a mail folder.
+func (c *Client) MailFolderMessagesResource(folderID string) string {
+	folderID = strings.ReplaceAll(folderID, "'", "''")
+	return c.MailboxResource(fmt.Sprintf("mailFolders('%s')/messages", folderID))
+}
+
+func (c *Client) mailboxURL(resource string) string {
+	return c.baseURL + "/" + c.MailboxResource(resource)
 }
 
 // Metrics returns current request stats
@@ -319,9 +348,9 @@ func (c *Client) FindFolderIDByPath(ctx context.Context, path string) (string, e
 func (c *Client) findChildFolder(ctx context.Context, parentID, name string) (string, error) {
 	var endpoint string
 	if parentID == "" {
-		endpoint = c.baseURL + c.userPath + "/mailFolders"
+		endpoint = c.mailboxURL("mailFolders")
 	} else {
-		endpoint = fmt.Sprintf("%s%s/mailFolders/%s/childFolders", c.baseURL, c.userPath, parentID)
+		endpoint = c.mailboxURL(fmt.Sprintf("mailFolders/%s/childFolders", parentID))
 	}
 
 	reqURL := endpoint + "?$top=200"
@@ -396,7 +425,7 @@ type folderSummary struct {
 }
 
 func (c *Client) listChildFolders(ctx context.Context, parentID string) ([]folderSummary, error) {
-	endpoint := fmt.Sprintf("%s%s/mailFolders/%s/childFolders?$top=200", c.baseURL, c.userPath, parentID)
+	endpoint := c.mailboxURL(fmt.Sprintf("mailFolders/%s/childFolders?$top=200", parentID))
 	resp, err := c.doWithRetry(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
@@ -577,7 +606,7 @@ func (c *Client) StreamMessages(ctx context.Context, folderID string, opts ListO
 			slog.Info("date filtering will be applied client-side (cannot combine with $search)")
 		}
 
-		endpoint := fmt.Sprintf("%s%s/mailFolders/%s/messages?%s", c.baseURL, c.userPath, folderID, params.Encode())
+		endpoint := c.mailboxURL(fmt.Sprintf("mailFolders/%s/messages?%s", folderID, params.Encode()))
 		var resultCount int
 		err := c.streamMessagesEndpoint(ctx, endpoint, func(m graphMessage) error {
 			resultCount++
@@ -632,7 +661,7 @@ func (c *Client) StreamMessages(ctx context.Context, folderID string, opts ListO
 		if len(filters) > 0 {
 			params.Set("$filter", strings.Join(filters, " and "))
 		}
-		endpoint := fmt.Sprintf("%s%s/mailFolders/%s/messages?%s", c.baseURL, c.userPath, folderID, params.Encode())
+		endpoint := c.mailboxURL(fmt.Sprintf("mailFolders/%s/messages?%s", folderID, params.Encode()))
 		return c.streamMessagesEndpoint(ctx, endpoint, func(m graphMessage) error {
 			return fn(toMessage(m))
 		})
@@ -705,7 +734,7 @@ func (c *Client) StreamMessages(ctx context.Context, folderID string, opts ListO
 		params.Set("$filter", strings.Join(filters, " and "))
 	}
 
-	endpoint := fmt.Sprintf("%s%s/mailFolders/%s/messages?%s", c.baseURL, c.userPath, folderID, params.Encode())
+	endpoint := c.mailboxURL(fmt.Sprintf("mailFolders/%s/messages?%s", folderID, params.Encode()))
 	return c.streamMessagesEndpoint(ctx, endpoint, func(m graphMessage) error {
 		return fn(toMessage(m))
 	})
@@ -748,7 +777,7 @@ func (c *Client) shouldBatch(ctx context.Context, folderID string) bool {
 }
 
 func (c *Client) getFolderTotalCount(ctx context.Context, folderID string) (int, error) {
-	endpoint := fmt.Sprintf("%s%s/mailFolders/%s?$select=totalItemCount", c.baseURL, c.userPath, folderID)
+	endpoint := c.mailboxURL(fmt.Sprintf("mailFolders/%s?$select=totalItemCount", folderID))
 	resp, err := c.doWithRetry(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return 0, err
@@ -813,7 +842,7 @@ func (c *Client) getEdgeDate(ctx context.Context, folderID string, filters []str
 	if len(filters) > 0 {
 		params.Set("$filter", strings.Join(filters, " and "))
 	}
-	endpoint := fmt.Sprintf("%s%s/mailFolders/%s/messages?%s", c.baseURL, c.userPath, folderID, params.Encode())
+	endpoint := c.mailboxURL(fmt.Sprintf("mailFolders/%s/messages?%s", folderID, params.Encode()))
 	resp, err := c.doWithRetry(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return time.Time{}, false, err
@@ -873,7 +902,7 @@ func (c *Client) listMessagesRange(ctx context.Context, folderID string, basePar
 	if len(filters) > 0 {
 		params.Set("$filter", strings.Join(filters, " and "))
 	}
-	endpoint := fmt.Sprintf("%s%s/mailFolders/%s/messages?%s", c.baseURL, c.userPath, folderID, params.Encode())
+	endpoint := c.mailboxURL(fmt.Sprintf("mailFolders/%s/messages?%s", folderID, params.Encode()))
 	var msgs []Message
 	if err := c.streamMessagesEndpoint(ctx, endpoint, func(m graphMessage) error {
 		msgs = append(msgs, toMessage(m))
@@ -958,7 +987,7 @@ func stripHTML(html string) string {
 func (c *Client) MoveMessage(ctx context.Context, msgID, destFolderID string) (string, error) {
 	payload := map[string]string{"destinationId": destFolderID}
 	buf, _ := json.Marshal(payload)
-	endpoint := fmt.Sprintf("%s%s/messages/%s/move", c.baseURL, c.userPath, msgID)
+	endpoint := c.mailboxURL(fmt.Sprintf("messages/%s/move", msgID))
 	resp, err := c.doWithRetry(ctx, http.MethodPost, endpoint, bytes.NewReader(buf))
 	if err != nil {
 		return "", err
@@ -989,7 +1018,7 @@ func (c *Client) MoveMessage(ctx context.Context, msgID, destFolderID string) (s
 func (c *Client) GetMessage(ctx context.Context, msgID string) (*Message, error) {
 	params := url.Values{}
 	params.Set("$select", "id,subject,from,toRecipients,body,bodyPreview,isRead,receivedDateTime,parentFolderId,internetMessageHeaders")
-	endpoint := fmt.Sprintf("%s%s/messages/%s?%s", c.baseURL, c.userPath, msgID, params.Encode())
+	endpoint := c.mailboxURL(fmt.Sprintf("messages/%s?%s", msgID, params.Encode()))
 
 	resp, err := c.doWithRetry(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -1021,7 +1050,7 @@ func (c *Client) GetMessageByInternetMessageID(ctx context.Context, messageID st
 	params.Set("$select", "id,subject,from,toRecipients,body,bodyPreview,isRead,receivedDateTime,parentFolderId,internetMessageId,internetMessageHeaders")
 	params.Set("$filter", fmt.Sprintf("internetMessageId eq '%s'", messageID))
 	params.Set("$top", "1")
-	endpoint := fmt.Sprintf("%s%s/messages?%s", c.baseURL, c.userPath, params.Encode())
+	endpoint := c.mailboxURL(fmt.Sprintf("messages?%s", params.Encode()))
 
 	resp, err := c.doWithRetry(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -1053,7 +1082,7 @@ func (c *Client) GetMessageByInternetMessageID(ctx context.Context, messageID st
 func (c *Client) GetMessageFolder(ctx context.Context, msgID string) (string, error) {
 	params := url.Values{}
 	params.Set("$select", "parentFolderId")
-	endpoint := fmt.Sprintf("%s%s/messages/%s?%s", c.baseURL, c.userPath, msgID, params.Encode())
+	endpoint := c.mailboxURL(fmt.Sprintf("messages/%s?%s", msgID, params.Encode()))
 
 	resp, err := c.doWithRetry(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -1077,7 +1106,7 @@ func (c *Client) GetMessageFolder(ctx context.Context, msgID string) (string, er
 func (c *Client) MarkRead(ctx context.Context, msgID string) error {
 	payload := map[string]bool{"isRead": true}
 	buf, _ := json.Marshal(payload)
-	endpoint := fmt.Sprintf("%s%s/messages/%s", c.baseURL, c.userPath, msgID)
+	endpoint := c.mailboxURL(fmt.Sprintf("messages/%s", msgID))
 	resp, err := c.doWithRetry(ctx, http.MethodPatch, endpoint, bytes.NewReader(buf))
 	if err != nil {
 		return err
@@ -1098,7 +1127,7 @@ func (c *Client) FlagMessage(ctx context.Context, msgID string, status string) e
 		},
 	}
 	buf, _ := json.Marshal(payload)
-	endpoint := fmt.Sprintf("%s%s/messages/%s", c.baseURL, c.userPath, msgID)
+	endpoint := c.mailboxURL(fmt.Sprintf("messages/%s", msgID))
 	resp, err := c.doWithRetry(ctx, http.MethodPatch, endpoint, bytes.NewReader(buf))
 	if err != nil {
 		return err
@@ -1113,7 +1142,7 @@ func (c *Client) FlagMessage(ctx context.Context, msgID string, status string) e
 
 // GetCategories returns the current categories on a message.
 func (c *Client) GetCategories(ctx context.Context, msgID string) ([]string, error) {
-	endpoint := fmt.Sprintf("%s%s/messages/%s?$select=categories", c.baseURL, c.userPath, msgID)
+	endpoint := c.mailboxURL(fmt.Sprintf("messages/%s?$select=categories", msgID))
 	resp, err := c.doWithRetry(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
@@ -1202,7 +1231,7 @@ func (c *Client) SetCategories(ctx context.Context, msgID string, categories []s
 		"categories": categories,
 	}
 	buf, _ := json.Marshal(payload)
-	endpoint := fmt.Sprintf("%s%s/messages/%s", c.baseURL, c.userPath, msgID)
+	endpoint := c.mailboxURL(fmt.Sprintf("messages/%s", msgID))
 	resp, err := c.doWithRetry(ctx, http.MethodPatch, endpoint, bytes.NewReader(buf))
 	if err != nil {
 		return err

@@ -86,30 +86,26 @@ func runWebhook(cmd *cobra.Command, args []string) error {
 
 	server := webhook.New(whCfg, handler)
 
-	// Resolve watch folder to Graph resource
+	// Resolve the watch folder once for processing, then derive the subscription
+	// resource from the same mailbox principal used by ordinary Graph requests.
 	watchFolder := cfg.Webhook.WatchFolder
 	if watchFolder == "" {
 		watchFolder = "Inbox"
 	}
-	
-	var resource string
-	var watchFolderID string
+
+	watchFolderID, err := client.FindFolderIDByPath(context.Background(), watchFolder)
+	if err != nil {
+		return fmt.Errorf("failed to resolve watch folder %q: %w", watchFolder, err)
+	}
+
+	subscriptionFolderID := watchFolderID
 	if watchFolder == "Inbox" {
-		resource = "me/mailFolders('Inbox')/messages"
-		watchFolderID, err = client.FindFolderIDByPath(context.Background(), "Inbox")
-		if err != nil {
-			return fmt.Errorf("failed to resolve Inbox folder: %w", err)
-		}
+		subscriptionFolderID = "Inbox"
 	} else {
-		// Resolve folder path to ID
-		watchFolderID, err = client.FindFolderIDByPath(context.Background(), watchFolder)
-		if err != nil {
-			return fmt.Errorf("failed to resolve watch folder %q: %w", watchFolder, err)
-		}
-		resource = fmt.Sprintf("me/mailFolders('%s')/messages", watchFolderID)
 		slog.Info("watching folder", "path", watchFolder, "id", watchFolderID)
 	}
-	
+	resource := client.MailFolderMessagesResource(subscriptionFolderID)
+
 	// Tell the engine which folder to expect messages from
 	eng.SetWatchFolder(watchFolder, watchFolderID)
 

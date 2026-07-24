@@ -13,13 +13,13 @@ import (
 
 // Subscription represents a Graph webhook subscription
 type Subscription struct {
-	ID                      string `json:"id,omitempty"`
-	ChangeType              string `json:"changeType"`
-	NotificationURL         string `json:"notificationUrl"`
-	Resource                string `json:"resource"`
-	ExpirationDateTime      string `json:"expirationDateTime"`
-	ClientState             string `json:"clientState"`
-	LatestSupportedTLSVer   string `json:"latestSupportedTlsVersion,omitempty"`
+	ID                    string `json:"id,omitempty"`
+	ChangeType            string `json:"changeType"`
+	NotificationURL       string `json:"notificationUrl"`
+	Resource              string `json:"resource"`
+	ExpirationDateTime    string `json:"expirationDateTime"`
+	ClientState           string `json:"clientState"`
+	LatestSupportedTLSVer string `json:"latestSupportedTlsVersion,omitempty"`
 }
 
 // SubscriptionManager handles Graph subscription lifecycle
@@ -32,12 +32,8 @@ type SubscriptionManager struct {
 	subscriptionID string
 }
 
-// NewSubscriptionManager creates a new manager
-// resource is the Graph API resource to watch, e.g. "me/mailFolders('Inbox')/messages"
+// NewSubscriptionManager creates a new manager.
 func NewSubscriptionManager(baseURL string, tokenFunc func() (string, error), notifyURL, clientState, resource string) *SubscriptionManager {
-	if resource == "" {
-		resource = "me/mailFolders('Inbox')/messages"
-	}
 	return &SubscriptionManager{
 		baseURL:     baseURL,
 		tokenFunc:   tokenFunc,
@@ -49,25 +45,45 @@ func NewSubscriptionManager(baseURL string, tokenFunc func() (string, error), no
 
 // CreateOrRenew ensures an active subscription exists
 func (m *SubscriptionManager) CreateOrRenew(ctx context.Context) error {
+	if m.resource == "" {
+		return fmt.Errorf("create subscription: mailbox resource is required")
+	}
+
 	// Try to list existing subscriptions first
 	existing, err := m.list(ctx)
 	if err != nil {
 		slog.Warn("failed to list subscriptions", "error", err)
 	}
 
-	// Find our subscription
+	// Reconcile every subscription for this notification URL before renewing.
+	// A subscription left behind by a prior auth mode must not remain active.
+	var currentID string
 	for _, sub := range existing {
-		if sub.NotificationURL == m.notifyURL {
-			// Try to renew
-			if err := m.renew(ctx, sub.ID); err != nil {
-				slog.Warn("failed to renew subscription, will create new", "error", err)
-				// Delete and recreate
-				_ = m.delete(ctx, sub.ID)
-			} else {
-				m.subscriptionID = sub.ID
-				slog.Info("renewed existing subscription", "id", sub.ID)
-				return nil
+		if sub.NotificationURL != m.notifyURL {
+			continue
+		}
+		if sub.Resource != m.resource {
+			slog.Info("deleting subscription for stale mailbox resource", "id", sub.ID)
+			if err := m.delete(ctx, sub.ID); err != nil {
+				return fmt.Errorf("delete subscription for stale mailbox resource: %w", err)
 			}
+			continue
+		}
+		if currentID == "" {
+			currentID = sub.ID
+		}
+	}
+
+	if currentID != "" {
+		if err := m.renew(ctx, currentID); err == nil {
+			m.subscriptionID = currentID
+			slog.Info("renewed existing subscription", "id", currentID)
+			return nil
+		} else {
+			slog.Warn("failed to renew subscription, will create new", "error", err)
+		}
+		if err := m.delete(ctx, currentID); err != nil {
+			return fmt.Errorf("delete unrenewable subscription: %w", err)
 		}
 	}
 
@@ -76,6 +92,10 @@ func (m *SubscriptionManager) CreateOrRenew(ctx context.Context) error {
 }
 
 func (m *SubscriptionManager) create(ctx context.Context) error {
+	if m.resource == "" {
+		return fmt.Errorf("create subscription: mailbox resource is required")
+	}
+
 	token, err := m.tokenFunc()
 	if err != nil {
 		return fmt.Errorf("get token: %w", err)
@@ -205,6 +225,9 @@ func (m *SubscriptionManager) delete(ctx context.Context, id string) error {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusNotFound {
+		return fmt.Errorf("delete subscription failed: %s", resp.Status)
+	}
 	return nil
 }
 
