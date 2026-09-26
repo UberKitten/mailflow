@@ -956,10 +956,15 @@ func toMessage(m graphMessage) Message {
 	}
 	received, _ := time.Parse(time.RFC3339, m.ReceivedDateTime)
 
-	// Convert internet message headers to map
+	// Convert internet message headers to a map. Preserve repeated fields such
+	// as References by joining their values instead of dropping earlier ones.
 	headers := make(map[string]string)
 	for _, h := range m.InternetMessageHeaders {
-		headers[h.Name] = h.Value
+		if existing := headers[h.Name]; existing != "" {
+			headers[h.Name] = existing + " " + h.Value
+		} else {
+			headers[h.Name] = h.Value
+		}
 	}
 
 	return Message{
@@ -1076,6 +1081,44 @@ func (c *Client) GetMessageByInternetMessageID(ctx context.Context, messageID st
 
 	msg := toMessage(result.Value[0])
 	return &msg, nil
+}
+
+// HasSentMessageByInternetMessageID reports whether Sent Items contains a
+// message with any of the supplied RFC 5322 Message-IDs.
+func (c *Client) HasSentMessageByInternetMessageID(ctx context.Context, messageIDs []string) (bool, error) {
+	for _, messageID := range messageIDs {
+		params := url.Values{}
+		params.Set("$select", "id")
+		params.Set("$filter", fmt.Sprintf("internetMessageId eq '%s'", strings.ReplaceAll(messageID, "'", "''")))
+		params.Set("$top", "1")
+		endpoint := c.mailboxURL(fmt.Sprintf("mailFolders/sentitems/messages?%s", params.Encode()))
+
+		resp, err := c.doWithRetry(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return false, err
+		}
+
+		if resp.StatusCode >= 300 {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return false, fmt.Errorf("search Sent Items by internetMessageId failed: %s - %s", resp.Status, string(body))
+		}
+
+		var result struct {
+			Value []struct {
+				ID string `json:"id"`
+			} `json:"value"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			resp.Body.Close()
+			return false, fmt.Errorf("decode Sent Items search response: %w", err)
+		}
+		resp.Body.Close()
+		if len(result.Value) > 0 {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // GetMessageFolder returns the folder ID containing the message

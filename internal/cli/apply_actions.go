@@ -81,16 +81,16 @@ func runApplyActions(cmd *cobra.Command, args []string) error {
 			return nil
 		}
 
-		// Process notify_only rules first (they don't prevent other rules from matching)
+		rule, notifyRules, err := selectRuleForMessage(ctx, env, msg, ruleName, fast, allowPushover)
+		if err != nil {
+			return err
+		}
 		if allowPushover {
-			notifyRules := engine.MatchNotifyOnly(env.Rules(), *msg)
 			for _, notifyRule := range notifyRules {
 				env.ApplyOnMatch(ctx, msg.ID, *msg, notifyRule, engine.OnMatchOptions{AllowPushover: true})
 				fmt.Printf("applied notify_only actions: %q from %s (rule: %s)\n", msg.Subject, msg.From, notifyRule.Name)
 			}
 		}
-
-		rule := selectRuleForMessage(env, msg, ruleName, fast)
 		if rule == nil {
 			fmt.Println("no sorting rule matched")
 			return nil
@@ -112,6 +112,9 @@ func runApplyActions(cmd *cobra.Command, args []string) error {
 	}
 
 	opts := graph.ListOptions{Since: since, Fast: fast}
+	if fast && rules.RequiresReplyHeaders(ruleName != "") {
+		opts.Fields = []string{"id", "from", "subject", "toRecipients", "receivedDateTime", "internetMessageHeaders"}
+	}
 
 	var scanned, matched, applied int
 	var lastApplied time.Time
@@ -123,7 +126,10 @@ func runApplyActions(cmd *cobra.Command, args []string) error {
 			return nil
 		}
 
-		rule := selectRuleForMessage(env, &msg, ruleName, fast)
+		rule, _, err := selectRuleForMessage(ctx, env, &msg, ruleName, fast, false)
+		if err != nil {
+			return err
+		}
 		if rule == nil {
 			return nil
 		}
@@ -146,22 +152,27 @@ func runApplyActions(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func selectRuleForMessage(env *engine.Engine, msg *graph.Message, ruleName string, fast bool) *config.Rule {
+func selectRuleForMessage(ctx context.Context, env *engine.Engine, msg *graph.Message, ruleName string, fast, includeNotifyOnly bool) (*config.Rule, []*config.Rule, error) {
+	opts := engine.MatchOptions{Fast: fast, IncludeNotifyOnly: includeNotifyOnly}
 	if ruleName == "" {
-		return engine.Match(env.Rules(), *msg, engine.MatchOptions{Fast: fast})
+		result, err := env.EvaluateRules(ctx, *msg, opts)
+		if err != nil {
+			return nil, nil, err
+		}
+		return result.MatchedRule, result.NotifyRules, nil
 	}
 
-	// Use debug match to evaluate a specific rule
-	debug, err := env.MatchWithDebug(msg)
+	// Debug matching evaluates a named rule even if an earlier rule also matches.
+	debug, err := env.MatchWithDebug(ctx, msg, opts)
 	if err != nil {
-		return nil
+		return nil, nil, err
 	}
 	for _, dr := range debug.Rules {
 		if dr.Rule.Name == ruleName && dr.Matched {
-			return dr.Rule
+			return dr.Rule, debug.NotifyRules, nil
 		}
 	}
-	return nil
+	return nil, debug.NotifyRules, nil
 }
 
 // getMessageByID fetches a message by Graph ID or RFC 5322 Message-ID

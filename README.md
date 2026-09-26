@@ -131,8 +131,10 @@ rules:
       - "verification code"
     from_name_contains:        # match sender display name
       - "Security Alert"
-    header_contains:           # match any header value
-      - "List-Id: <mylist.example.com>"
+    header_contains:           # match values in named headers
+      List-Id:
+        - "<mylist.example.com>"
+    reply_to_sent: true        # In-Reply-To/References points to Sent Items
     catchall: true             # matches everything (for catch-all rules)
     categories:                # Outlook categories to apply
       - "Important"
@@ -143,6 +145,13 @@ rules:
       exec:                    # run a script, email JSON on stdin
         command: /app/scripts/my-script.sh
 ```
+
+Populated matchers on a rule are AND-composed; list values within a matcher
+are alternatives. `reply_to_sent` is an ordinary boolean matcher and defaults
+to `false`. When `true`, mailflow parses RFC Message-IDs from the fetched
+`In-Reply-To` and `References` headers and matches only when at least one
+referenced message exists in **Sent Items**. It does not use conversation IDs,
+and a reference to a message elsewhere in the mailbox does not match.
 
 ### Sender lists (`senders.d/`)
 

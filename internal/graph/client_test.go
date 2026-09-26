@@ -403,3 +403,44 @@ func TestMatchSenderPattern(t *testing.T) {
 		})
 	}
 }
+
+func TestHasSentMessageByInternetMessageIDSearchesOnlySentItems(t *testing.T) {
+	var filters []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/me/mailFolders/sentitems/messages" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		filter := r.URL.Query().Get("$filter")
+		filters = append(filters, filter)
+		switch filter {
+		case "internetMessageId eq '<missing@example.com>'":
+			_ = json.NewEncoder(w).Encode(map[string]any{"value": []any{}})
+		case "internetMessageId eq '<sent.o''ne@example.com>'":
+			_ = json.NewEncoder(w).Encode(map[string]any{"value": []map[string]string{{"id": "sent-id"}}})
+		default:
+			t.Errorf("unexpected filter: %q", filter)
+			http.Error(w, "unexpected filter", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	client := newTestClient(t, server.URL, writeScript(t, dir))
+	client.httpClient = server.Client()
+
+	matched, err := client.HasSentMessageByInternetMessageID(context.Background(), []string{
+		"<missing@example.com>",
+		"<sent.o'ne@example.com>",
+	})
+	if err != nil {
+		t.Fatalf("HasSentMessageByInternetMessageID: %v", err)
+	}
+	if !matched {
+		t.Fatal("expected a Sent Items match")
+	}
+	if len(filters) != 2 {
+		t.Fatalf("filters = %v, want both references checked in order", filters)
+	}
+}

@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"context"
+	"fmt"
 	"strings"
 
 	"mailflow/internal/config"
@@ -28,20 +30,51 @@ type DebugRule struct {
 // DebugResult holds debug info for all rules.
 type DebugResult struct {
 	Rules       []DebugRule
-	MatchedRule *config.Rule // first matching rule (nil if none)
+	MatchedRule *config.Rule // first matching sorting rule (nil if none)
+	NotifyRules []*config.Rule
 }
 
 // MatchWithDebug matches an email against all rules and returns detailed debug info.
-func (e *Engine) MatchWithDebug(msg *graph.Message) (*DebugResult, error) {
+func (e *Engine) MatchWithDebug(ctx context.Context, msg *graph.Message, opts MatchOptions) (*DebugResult, error) {
 	result := &DebugResult{}
+	evaluator := &ruleEvaluator{ctx: ctx, client: e.client, msg: *msg, opts: opts}
 
 	for i := range e.rules.Rules {
 		rule := &e.rules.Rules[i]
-		debugRule := debugRuleMatch(*rule, *msg, MatchOptions{})
+		debugRule := debugRuleMatch(*rule, *msg, opts)
 		debugRule.Rule = rule
+
+		if rule.ReplyToSent {
+			condition := DebugCondition{
+				Name: "reply_to_sent",
+				Want: []string{"true"},
+				Note: "uses In-Reply-To and References headers; checks Sent Items only",
+			}
+			if !debugRule.Matched {
+				condition.Note = "not checked because another condition did not match"
+			} else {
+				matched, err := evaluator.matchesReplyToSent()
+				if err != nil {
+					return nil, fmt.Errorf("evaluate rule %q: %w", rule.Name, err)
+				}
+				condition.Matched = matched
+				if matched {
+					condition.Got = "referenced message found in Sent Items"
+				} else {
+					condition.Got = "no referenced message found in Sent Items"
+					debugRule.Matched = false
+				}
+			}
+			debugRule.Conditions = append(debugRule.Conditions, condition)
+		}
 		result.Rules = append(result.Rules, debugRule)
 
-		if debugRule.Matched && result.MatchedRule == nil {
+		if !debugRule.Matched {
+			continue
+		}
+		if rule.NotifyOnly {
+			result.NotifyRules = append(result.NotifyRules, rule)
+		} else if result.MatchedRule == nil && !(opts.IgnoreCatchall && rule.Catchall) {
 			result.MatchedRule = rule
 		}
 	}

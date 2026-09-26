@@ -75,7 +75,7 @@ var knownRuleKeys = map[string]bool{
 	"body_contains": true, "body_contains_any": true,
 	"body_prefix_contains": true, "body_prefix_length": true,
 	"subject_not_contains": true, "body_not_contains": true,
-	"header_contains":  true,
+	"header_contains": true, "reply_to_sent": true,
 	"case_insensitive": true, "catchall": true, "on_match": true,
 	"notify_only": true,
 }
@@ -315,6 +315,21 @@ func (r *RuleSet) Destinations() []string {
 	return result
 }
 
+// RequiresReplyHeaders reports whether evaluating this ruleset needs reply
+// headers, including in otherwise-minimal message listings. Notify-only rules
+// are considered only when their results will be consumed.
+func (r *RuleSet) RequiresReplyHeaders(includeNotifyOnly bool) bool {
+	if r == nil {
+		return false
+	}
+	for _, rule := range r.Rules {
+		if rule.ReplyToSent && (includeNotifyOnly || !rule.NotifyOnly) {
+			return true
+		}
+	}
+	return false
+}
+
 // Rule definition.
 type Rule struct {
 	Name               string
@@ -333,6 +348,7 @@ type Rule struct {
 	BodyPrefixContains []string
 	BodyPrefixLength   int
 	HeaderContains     map[string][]string // header name → list of match values (any match = pass)
+	ReplyToSent        bool
 	CaseInsensitive    bool
 	Catchall           bool
 	NotifyOnly         bool
@@ -820,6 +836,14 @@ func (r *Rule) UnmarshalYAML(value *yaml.Node) error {
 				return fmt.Errorf("header_contains[%s]: %w", headerName, err)
 			}
 			r.HeaderContains[headerName] = list
+		}
+	}
+	if node, ok := raw["reply_to_sent"]; ok {
+		if node.Kind != yaml.ScalarNode || node.Tag != "!!bool" {
+			return fmt.Errorf("reply_to_sent must be a boolean")
+		}
+		if err := node.Decode(&r.ReplyToSent); err != nil {
+			return fmt.Errorf("reply_to_sent must be a boolean: %w", err)
 		}
 	}
 	if node, ok := raw["case_insensitive"]; ok {

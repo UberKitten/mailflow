@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func writeFile(t *testing.T, path, contents string) {
@@ -792,5 +794,70 @@ rules:
 	}
 	if rule3.FromName[0] != "Single Value" {
 		t.Fatalf("unexpected FromName[0]: %q", rule3.FromName[0])
+	}
+}
+
+func TestReplyToSentParsingAndHeaderRequirement(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "config.yaml"), "include:\n  - rules.d/*.yaml\n")
+	writeFile(t, filepath.Join(dir, "rules.d", "rules.yaml"), `version: 1
+rules:
+  - name: reply
+    folder: Inbox/Replies
+    reply_to_sent: true
+  - name: false
+    folder: Inbox/Other
+    reply_to_sent: false
+  - name: omitted
+    folder: Inbox/Other
+`)
+
+	cfg, err := LoadMainConfig(dir)
+	if err != nil {
+		t.Fatalf("LoadMainConfig: %v", err)
+	}
+	ruleset, err := loadRules(dir, cfg, map[string]SenderList{})
+	if err != nil {
+		t.Fatalf("loadRules: %v", err)
+	}
+	if !ruleset.Rules[0].ReplyToSent {
+		t.Fatal("reply_to_sent=true was not parsed")
+	}
+	if ruleset.Rules[1].ReplyToSent || ruleset.Rules[2].ReplyToSent {
+		t.Fatal("reply_to_sent must default to false")
+	}
+	if !ruleset.RequiresReplyHeaders(false) {
+		t.Fatal("sorting ruleset with reply_to_sent=true must require reply headers")
+	}
+	if (&RuleSet{Rules: ruleset.Rules[1:]}).RequiresReplyHeaders(false) {
+		t.Fatal("false and omitted reply_to_sent must not require reply headers")
+	}
+
+	notifyOnly := &RuleSet{Rules: []Rule{{ReplyToSent: true, NotifyOnly: true}}}
+	if notifyOnly.RequiresReplyHeaders(false) {
+		t.Fatal("sorting-only evaluation must not fetch headers for reply notify-only rules")
+	}
+	if !notifyOnly.RequiresReplyHeaders(true) {
+		t.Fatal("notify-inclusive evaluation must fetch headers for reply notify-only rules")
+	}
+}
+
+func TestReplyToSentRejectsMissingOrNonBooleanValues(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+	}{
+		{name: "blank", yaml: "reply_to_sent:\n"},
+		{name: "null", yaml: "reply_to_sent: null\n"},
+		{name: "non-boolean", yaml: "reply_to_sent: not-a-bool\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var rule Rule
+			err := yaml.Unmarshal([]byte(tt.yaml), &rule)
+			if err == nil || !strings.Contains(err.Error(), "reply_to_sent must be a boolean") {
+				t.Fatalf("error = %v, want boolean validation error", err)
+			}
+		})
 	}
 }

@@ -86,8 +86,13 @@ Rules are evaluated in filename order. First match wins. Available matchers:
 | `to` / `to_domain` | Recipient address/domain |
 | `subject_contains` | Substring match on subject |
 | `from_name` / `from_name_contains` | Sender display name |
-| `header_contains` | Any email header value |
+| `header_contains` | Values in named email headers |
+| `reply_to_sent: true` | RFC Message-ID in `In-Reply-To`/`References` belongs to Sent Items |
 | `catchall: true` | Matches everything |
+
+Populated matchers are AND-composed. `reply_to_sent` defaults to `false` and
+uses fetched headers only: it checks referenced Message-IDs specifically in
+Sent Items, not elsewhere in the mailbox, and never uses conversation IDs.
 
 ## Important patterns
 

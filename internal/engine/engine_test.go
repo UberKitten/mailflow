@@ -10,10 +10,21 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"mailflow/internal/config"
 	"mailflow/internal/graph"
 )
+
+// Match keeps the existing pure matcher tests concise while production
+// callsites use EvaluateRules so lookup errors can propagate.
+func Match(rules *config.RuleSet, msg graph.Message, opts MatchOptions) *config.Rule {
+	result, err := New(&config.Config{}, rules, nil).EvaluateRules(context.Background(), msg, opts)
+	if err != nil {
+		panic(err)
+	}
+	return result.MatchedRule
+}
 
 func TestMatchPatternsAndCaseInsensitive(t *testing.T) {
 	rules := &config.RuleSet{Rules: []config.Rule{
@@ -1186,5 +1197,403 @@ func TestCategoryActionPreservesExistingUntilExactCorrectionRemoved(t *testing.T
 	wantAfterCorrection := []string{"Keep", "Rule Category"}
 	if !reflect.DeepEqual(remaining, wantAfterCorrection) {
 		t.Fatalf("categories after correction clear = %v, want %v", remaining, wantAfterCorrection)
+	}
+}
+
+func TestReplyToSentOmittedAndFalseDoNotLookup(t *testing.T) {
+	tests := []struct {
+		name string
+		rule config.Rule
+	}{
+		{name: "omitted", rule: config.Rule{Name: "ordinary", From: []string{"friend@example.com"}}},
+		{name: "false", rule: config.Rule{Name: "ordinary", From: []string{"friend@example.com"}, ReplyToSent: false}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requests := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				t.Errorf("unexpected lookup: %s %s", r.Method, r.URL.Path)
+				http.NotFound(w, r)
+			}))
+			defer server.Close()
+
+			eng := New(&config.Config{}, &config.RuleSet{Rules: []config.Rule{tt.rule}}, newEngineTestClient(t, server.URL))
+			result, err := eng.EvaluateRules(context.Background(), graph.Message{
+				From:    "friend@example.com",
+				Headers: map[string]string{"In-Reply-To": "<sent@example.com>"},
+			}, MatchOptions{})
+			if err != nil {
+				t.Fatalf("EvaluateRules: %v", err)
+			}
+			if result.MatchedRule == nil || result.MatchedRule.Name != "ordinary" {
+				t.Fatalf("matched rule = %#v, want ordinary", result.MatchedRule)
+			}
+			if requests != 0 {
+				t.Fatalf("lookup requests = %d, want 0", requests)
+			}
+		})
+	}
+}
+
+func TestReplyToSentMatchesReferencedMessageInSentItems(t *testing.T) {
+	var filters []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/me/mailFolders/sentitems/messages" {
+			t.Errorf("lookup escaped Sent Items: %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		filter := r.URL.Query().Get("$filter")
+		filters = append(filters, filter)
+		if filter == "internetMessageId eq '<sent@example.com>'" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"value": []map[string]string{{"id": "sent-id"}}})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"value": []any{}})
+	}))
+	defer server.Close()
+
+	rules := &config.RuleSet{Rules: []config.Rule{
+		{Name: "reply", From: []string{"friend@example.com"}, ReplyToSent: true},
+		{Name: "fallback", Catchall: true},
+	}}
+	eng := New(&config.Config{}, rules, newEngineTestClient(t, server.URL))
+	result, err := eng.EvaluateRules(context.Background(), graph.Message{
+		From:    "friend@example.com",
+		Headers: map[string]string{"References": "noise <older@example.com>\r\n\t<sent@example.com>"},
+	}, MatchOptions{})
+	if err != nil {
+		t.Fatalf("EvaluateRules: %v", err)
+	}
+	if result.MatchedRule == nil || result.MatchedRule.Name != "reply" {
+		t.Fatalf("matched rule = %#v, want reply", result.MatchedRule)
+	}
+	wantFilters := []string{
+		"internetMessageId eq '<older@example.com>'",
+		"internetMessageId eq '<sent@example.com>'",
+	}
+	if !reflect.DeepEqual(filters, wantFilters) {
+		t.Fatalf("filters = %v, want %v", filters, wantFilters)
+	}
+}
+
+func TestReplyToSentDoesNotMatchReferenceOutsideSentItems(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Path != "/me/mailFolders/sentitems/messages" {
+			t.Errorf("must not use mailbox-wide lookup: %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"value": []any{}})
+	}))
+	defer server.Close()
+
+	rules := &config.RuleSet{Rules: []config.Rule{
+		{Name: "reply", ReplyToSent: true},
+		{Name: "fallback", Catchall: true},
+	}}
+	eng := New(&config.Config{}, rules, newEngineTestClient(t, server.URL))
+	result, err := eng.EvaluateRules(context.Background(), graph.Message{
+		Headers: map[string]string{"In-Reply-To": "<inbox-only@example.com>"},
+	}, MatchOptions{})
+	if err != nil {
+		t.Fatalf("EvaluateRules: %v", err)
+	}
+	if result.MatchedRule == nil || result.MatchedRule.Name != "fallback" {
+		t.Fatalf("matched rule = %#v, want fallback", result.MatchedRule)
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want one Sent Items lookup", requests)
+	}
+}
+
+func TestReplyToSentMalformedOrAbsentHeadersAreSafeNonMatches(t *testing.T) {
+	tests := []struct {
+		name    string
+		headers map[string]string
+	}{
+		{name: "absent"},
+		{name: "malformed", headers: map[string]string{
+			"In-Reply-To": "<missing-at-sign> <broken @example.com>",
+			"References":  "not bracketed@example.com <also..broken@example.com>",
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requests := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				http.Error(w, "lookup must not run", http.StatusInternalServerError)
+			}))
+			defer server.Close()
+
+			rules := &config.RuleSet{Rules: []config.Rule{
+				{Name: "reply", ReplyToSent: true},
+				{Name: "fallback", Catchall: true},
+			}}
+			eng := New(&config.Config{}, rules, newEngineTestClient(t, server.URL))
+			result, err := eng.EvaluateRules(context.Background(), graph.Message{Headers: tt.headers}, MatchOptions{})
+			if err != nil {
+				t.Fatalf("EvaluateRules: %v", err)
+			}
+			if result.MatchedRule == nil || result.MatchedRule.Name != "fallback" {
+				t.Fatalf("matched rule = %#v, want fallback", result.MatchedRule)
+			}
+			if requests != 0 {
+				t.Fatalf("lookup requests = %d, want 0", requests)
+			}
+		})
+	}
+}
+
+func TestReplyToSentShortCircuitsCheapPredicatesAndFirstMatch(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		http.Error(w, "lookup must not run", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	rules := &config.RuleSet{Rules: []config.Rule{
+		{Name: "cheap-miss", From: []string{"someone-else@example.com"}, ReplyToSent: true},
+		{Name: "ordinary-first", From: []string{"friend@example.com"}},
+		{Name: "lower-reply", ReplyToSent: true},
+	}}
+	eng := New(&config.Config{}, rules, newEngineTestClient(t, server.URL))
+	result, err := eng.EvaluateRules(context.Background(), graph.Message{
+		From:    "friend@example.com",
+		Headers: map[string]string{"In-Reply-To": "<sent@example.com>"},
+	}, MatchOptions{})
+	if err != nil {
+		t.Fatalf("EvaluateRules: %v", err)
+	}
+	if result.MatchedRule == nil || result.MatchedRule.Name != "ordinary-first" {
+		t.Fatalf("matched rule = %#v, want ordinary-first", result.MatchedRule)
+	}
+	if requests != 0 {
+		t.Fatalf("lookup requests = %d, want 0", requests)
+	}
+}
+
+func TestReplyToSentLookupErrorSurfaces(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/me/mailFolders/sentitems/messages" {
+			t.Errorf("unexpected lookup path: %s", r.URL.Path)
+		}
+		http.Error(w, "synthetic rejection", http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	rules := &config.RuleSet{Rules: []config.Rule{{Name: "reply", ReplyToSent: true}}}
+	eng := New(&config.Config{}, rules, newEngineTestClient(t, server.URL))
+	_, err := eng.EvaluateRules(context.Background(), graph.Message{
+		Headers: map[string]string{"In-Reply-To": "<sent@example.com>"},
+	}, MatchOptions{})
+	if err == nil {
+		t.Fatal("expected lookup error")
+	}
+	if !strings.Contains(err.Error(), `evaluate rule "reply"`) ||
+		!strings.Contains(err.Error(), "search Sent Items by internetMessageId failed") {
+		t.Fatalf("error is not explicit: %v", err)
+	}
+}
+
+func TestReplyToSentDebugEvaluationReportsPredicate(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Path != "/me/mailFolders/sentitems/messages" {
+			t.Errorf("unexpected lookup path: %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"value": []map[string]string{{"id": "sent-id"}}})
+	}))
+	defer server.Close()
+
+	rules := &config.RuleSet{Rules: []config.Rule{{
+		Name:        "reply",
+		ReplyToSent: true,
+	}}}
+	eng := New(&config.Config{}, rules, newEngineTestClient(t, server.URL))
+	msg := &graph.Message{Headers: map[string]string{"in-reply-to": "<sent@example.com>"}}
+	result, err := eng.MatchWithDebug(context.Background(), msg, MatchOptions{})
+	if err != nil {
+		t.Fatalf("MatchWithDebug: %v", err)
+	}
+	if result.MatchedRule == nil || result.MatchedRule.Name != "reply" {
+		t.Fatalf("matched rule = %#v, want reply", result.MatchedRule)
+	}
+	if len(result.Rules) != 1 || len(result.Rules[0].Conditions) != 1 {
+		t.Fatalf("debug result = %#v, want one reply_to_sent condition", result.Rules)
+	}
+	condition := result.Rules[0].Conditions[0]
+	if condition.Name != "reply_to_sent" || !condition.Matched {
+		t.Fatalf("condition = %#v, want matching reply_to_sent", condition)
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want one Sent Items lookup", requests)
+	}
+}
+
+func TestSortingOnlyEvaluationSkipsReplyNotifyLookup(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		http.Error(w, "synthetic notify lookup failure", http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	rules := &config.RuleSet{Rules: []config.Rule{
+		{Name: "reply-notify", NotifyOnly: true, ReplyToSent: true},
+		{Name: "sorting-rule", From: []string{"friend@example.com"}},
+	}}
+	eng := New(&config.Config{}, rules, newEngineTestClient(t, server.URL))
+	msg := graph.Message{
+		From:    "friend@example.com",
+		Headers: map[string]string{"In-Reply-To": "<sent@example.com>"},
+	}
+
+	result, err := eng.EvaluateRules(context.Background(), msg, MatchOptions{})
+	if err != nil {
+		t.Fatalf("sorting-only EvaluateRules: %v", err)
+	}
+	if result.MatchedRule == nil || result.MatchedRule.Name != "sorting-rule" {
+		t.Fatalf("matched rule = %#v, want sorting-rule", result.MatchedRule)
+	}
+	if len(result.NotifyRules) != 0 {
+		t.Fatalf("notify rules = %#v, want none when not requested", result.NotifyRules)
+	}
+	if requests != 0 {
+		t.Fatalf("lookup requests = %d, want 0 when notify results are not requested", requests)
+	}
+
+	_, err = eng.EvaluateRules(context.Background(), msg, MatchOptions{IncludeNotifyOnly: true})
+	if err == nil || !strings.Contains(err.Error(), `evaluate rule "reply-notify"`) {
+		t.Fatalf("notify-inclusive error = %v, want explicit reply-notify lookup failure", err)
+	}
+	if requests != 1 {
+		t.Fatalf("lookup requests = %d, want 1 when notify results are requested", requests)
+	}
+}
+
+func TestProcessMessageEvaluatesReplyNotifyRules(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		switch r.URL.Path {
+		case "/me/messages/message-id":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":      "message-id",
+				"subject": "Reply",
+				"from": map[string]any{
+					"emailAddress": map[string]string{"address": "friend@example.com"},
+				},
+				"internetMessageHeaders": []map[string]string{{
+					"name": "In-Reply-To", "value": "<sent@example.com>",
+				}},
+			})
+		case "/me/mailFolders/sentitems/messages":
+			http.Error(w, "synthetic notify lookup failure", http.StatusBadRequest)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	rules := &config.RuleSet{Rules: []config.Rule{
+		{Name: "reply-notify", NotifyOnly: true, ReplyToSent: true},
+		{Name: "sorting-rule", Folder: "Inbox", Catchall: true},
+	}}
+	eng := New(&config.Config{}, rules, newEngineTestClient(t, server.URL))
+	_, err := eng.ProcessMessage(context.Background(), "message-id")
+	if err == nil || !strings.Contains(err.Error(), `evaluate rule "reply-notify"`) {
+		t.Fatalf("ProcessMessage error = %v, want reply-notify lookup failure", err)
+	}
+	if requests != 2 {
+		t.Fatalf("requests = %d, want message fetch plus notify lookup", requests)
+	}
+}
+
+func TestProcessOnceEvaluatesReplyNotifyRules(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		switch r.URL.Path {
+		case "/me/mailFolders":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"value": []map[string]string{{"id": "inbox-id", "displayName": "Inbox"}},
+			})
+		case "/me/mailFolders/inbox-id/messages":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"value": []map[string]any{{
+					"id":      "message-id",
+					"subject": "Reply",
+					"from": map[string]any{
+						"emailAddress": map[string]string{"address": "friend@example.com"},
+					},
+					"internetMessageHeaders": []map[string]string{{
+						"name": "References", "value": "<sent@example.com>",
+					}},
+				}},
+			})
+		case "/me/mailFolders/sentitems/messages":
+			http.Error(w, "synthetic notify lookup failure", http.StatusBadRequest)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	rules := &config.RuleSet{Rules: []config.Rule{
+		{Name: "reply-notify", NotifyOnly: true, ReplyToSent: true},
+		{Name: "sorting-rule", Folder: "Inbox", Catchall: true},
+	}}
+	eng := New(&config.Config{}, rules, newEngineTestClient(t, server.URL))
+	err := eng.ProcessOnce(context.Background(), time.Hour)
+	if err == nil || !strings.Contains(err.Error(), `evaluate rule "reply-notify"`) {
+		t.Fatalf("ProcessOnce error = %v, want reply-notify lookup failure", err)
+	}
+	if requests != 3 {
+		t.Fatalf("requests = %d, want folder, message list, and notify lookup", requests)
+	}
+}
+
+func TestGapsFastDoesNotFetchHeadersForSkippedNotifyOnlyRules(t *testing.T) {
+	selectedFields := ""
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/me/mailFolders":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"value": []map[string]string{{"id": "inbox-id", "displayName": "Inbox"}},
+			})
+		case "/me/mailFolders/inbox-id/messages":
+			selectedFields = r.URL.Query().Get("$select")
+			_ = json.NewEncoder(w).Encode(map[string]any{"value": []any{}})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	rules := &config.RuleSet{Rules: []config.Rule{{
+		Name:        "reply-notify",
+		NotifyOnly:  true,
+		ReplyToSent: true,
+	}}}
+	eng := New(&config.Config{}, rules, newEngineTestClient(t, server.URL))
+	if _, err := eng.Gaps(context.Background(), "Inbox", GapsOptions{Fast: true}); err != nil {
+		t.Fatalf("Gaps: %v", err)
+	}
+	if strings.Contains(selectedFields, "internetMessageHeaders") {
+		t.Fatalf("$select = %q, must omit headers for skipped notify-only rules", selectedFields)
 	}
 }

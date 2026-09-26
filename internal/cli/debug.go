@@ -117,7 +117,7 @@ func runDebug(cmd *cobra.Command, args []string) error {
 	fmt.Println()
 
 	// Always show debug output first
-	result, err := env.MatchWithDebug(msg)
+	result, err := env.MatchWithDebug(ctx, msg, engine.MatchOptions{})
 	if err != nil {
 		return err
 	}
@@ -203,8 +203,8 @@ func runDebug(cmd *cobra.Command, args []string) error {
 		}
 
 	case "notify":
-		// Send pushover notifications for notify_only rules
-		notifyRules := engine.MatchNotifyOnly(env.Rules(), *msg)
+		// Send pushover notifications for matching notify_only rules.
+		notifyRules := result.NotifyRules
 		if len(notifyRules) > 0 {
 			for _, notifyRule := range notifyRules {
 				env.ApplyOnMatch(ctx, msg.ID, *msg, notifyRule, engine.OnMatchOptions{AllowPushover: true})

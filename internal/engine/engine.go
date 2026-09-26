@@ -76,11 +76,12 @@ func (e *Engine) ProcessOnce(ctx context.Context, since time.Duration) error {
 	for _, msg := range msgs {
 		e.maybeLookupEnvelopeRecipient(ctx, &msg)
 
-		// Collect notify_only rules before moving (match against original message)
-		notifyRules := MatchNotifyOnly(e.rules, msg)
-
-		// Find the sorting rule
-		rule := Match(e.rules, msg, MatchOptions{})
+		evaluation, err := e.EvaluateRules(ctx, msg, MatchOptions{IncludeNotifyOnly: true})
+		if err != nil {
+			return err
+		}
+		notifyRules := evaluation.NotifyRules
+		rule := evaluation.MatchedRule
 		if rule == nil {
 			// No sorting rule — fire notify_only with original ID (message stays put)
 			for _, notifyRule := range notifyRules {
@@ -167,8 +168,12 @@ func (e *Engine) ProcessMessage(ctx context.Context, messageID string) (ProcessR
 
 	e.maybeLookupEnvelopeRecipient(ctx, msg)
 
-	notifyRules := MatchNotifyOnly(e.rules, *msg)
-	rule := Match(e.rules, *msg, MatchOptions{})
+	evaluation, err := e.EvaluateRules(ctx, *msg, MatchOptions{IncludeNotifyOnly: true})
+	if err != nil {
+		return ProcessResult{}, err
+	}
+	notifyRules := evaluation.NotifyRules
+	rule := evaluation.MatchedRule
 	if rule == nil {
 		for _, notifyRule := range notifyRules {
 			slog.Info("notify_only matched", "id", messageID, "from", msg.From, "subject", msg.Subject, "rule", notifyRule.Name)
@@ -385,42 +390,169 @@ func (e *Engine) executeExec(ctx context.Context, msg graph.Message, execAction 
 
 // MatchOptions controls rule matching behavior.
 type MatchOptions struct {
-	Fast           bool
-	IgnoreCatchall bool
+	Fast              bool
+	IgnoreCatchall    bool
+	IncludeNotifyOnly bool
 }
 
-// Match returns the first rule that matches.
-func Match(rules *config.RuleSet, msg graph.Message, opts MatchOptions) *config.Rule {
-	for i := range rules.Rules {
-		rule := &rules.Rules[i]
-		if opts.IgnoreCatchall && rule.Catchall {
+// EvaluationResult contains the first matching sorting rule and any requested
+// matching notify-only rules.
+type EvaluationResult struct {
+	MatchedRule *config.Rule
+	NotifyRules []*config.Rule
+}
+
+type ruleEvaluator struct {
+	ctx                 context.Context
+	client              *graph.Client
+	msg                 graph.Message
+	opts                MatchOptions
+	replyToSentResolved bool
+	replyToSent         bool
+	replyToSentErr      error
+}
+
+// EvaluateRules evaluates rules in priority order. The Sent Items lookup is
+// lazy and shared by reply_to_sent predicates for this one message.
+func (e *Engine) EvaluateRules(ctx context.Context, msg graph.Message, opts MatchOptions) (*EvaluationResult, error) {
+	result := &EvaluationResult{}
+	evaluator := &ruleEvaluator{ctx: ctx, client: e.client, msg: msg, opts: opts}
+
+	for i := range e.rules.Rules {
+		rule := &e.rules.Rules[i]
+		if rule.NotifyOnly && !opts.IncludeNotifyOnly {
 			continue
 		}
-		// Skip notify_only rules - they don't move messages
 		if rule.NotifyOnly {
+			matched, err := evaluator.matches(*rule)
+			if err != nil {
+				return nil, fmt.Errorf("evaluate rule %q: %w", rule.Name, err)
+			}
+			if matched {
+				result.NotifyRules = append(result.NotifyRules, rule)
+			}
 			continue
 		}
-		if ruleMatches(*rule, msg, opts) {
-			return rule
+		if result.MatchedRule != nil || (opts.IgnoreCatchall && rule.Catchall) {
+			continue
+		}
+
+		matched, err := evaluator.matches(*rule)
+		if err != nil {
+			return nil, fmt.Errorf("evaluate rule %q: %w", rule.Name, err)
+		}
+		if matched {
+			result.MatchedRule = rule
 		}
 	}
-	return nil
+	return result, nil
 }
 
-// MatchNotifyOnly returns all matching notify_only rules for a message.
-// These rules trigger on_match actions but don't prevent other rules from matching.
-func MatchNotifyOnly(rules *config.RuleSet, msg graph.Message) []*config.Rule {
-	var matches []*config.Rule
-	for i := range rules.Rules {
-		rule := &rules.Rules[i]
-		if !rule.NotifyOnly {
+func (m *ruleEvaluator) matches(rule config.Rule) (bool, error) {
+	if !ruleMatches(rule, m.msg, m.opts) {
+		return false, nil
+	}
+	if !rule.ReplyToSent {
+		return true, nil
+	}
+	return m.matchesReplyToSent()
+}
+
+func (m *ruleEvaluator) matchesReplyToSent() (bool, error) {
+	if m.replyToSentResolved {
+		return m.replyToSent, m.replyToSentErr
+	}
+	m.replyToSentResolved = true
+
+	messageIDs := referencedMessageIDs(m.msg.Headers)
+	if len(messageIDs) == 0 {
+		return false, nil
+	}
+	if m.client == nil {
+		m.replyToSentErr = errors.New("Sent Items lookup unavailable")
+		return false, m.replyToSentErr
+	}
+	m.replyToSent, m.replyToSentErr = m.client.HasSentMessageByInternetMessageID(m.ctx, messageIDs)
+	return m.replyToSent, m.replyToSentErr
+}
+
+func referencedMessageIDs(headers map[string]string) []string {
+	var messageIDs []string
+	seen := make(map[string]struct{})
+	for name, value := range headers {
+		if !strings.EqualFold(name, "In-Reply-To") && !strings.EqualFold(name, "References") {
 			continue
 		}
-		if ruleMatches(*rule, msg, MatchOptions{}) {
-			matches = append(matches, rule)
+		for _, messageID := range extractMessageIDs(value) {
+			if _, ok := seen[messageID]; ok {
+				continue
+			}
+			seen[messageID] = struct{}{}
+			messageIDs = append(messageIDs, messageID)
 		}
 	}
-	return matches
+	return messageIDs
+}
+
+func extractMessageIDs(value string) []string {
+	var messageIDs []string
+	start := -1
+	for i := range len(value) {
+		switch value[i] {
+		case '<':
+			// A nested opening bracket makes the preceding candidate
+			// malformed, but should not hide a later valid Message-ID.
+			start = i
+		case '>':
+			if start < 0 {
+				continue
+			}
+			candidate := value[start : i+1]
+			if validMessageID(candidate) {
+				messageIDs = append(messageIDs, candidate)
+			}
+			start = -1
+		}
+	}
+	return messageIDs
+}
+
+func validMessageID(messageID string) bool {
+	if len(messageID) < 5 || messageID[0] != '<' || messageID[len(messageID)-1] != '>' {
+		return false
+	}
+	inner := messageID[1 : len(messageID)-1]
+	if strings.ContainsAny(inner, " \t\r\n<>") || strings.Count(inner, "@") != 1 {
+		return false
+	}
+	at := strings.IndexByte(inner, '@')
+	return validMessageIDAtom(inner[:at]) && validMessageIDRight(inner[at+1:])
+}
+
+func validMessageIDAtom(value string) bool {
+	if value == "" || value[0] == '.' || value[len(value)-1] == '.' || strings.Contains(value, "..") {
+		return false
+	}
+	for _, ch := range value {
+		if ch == '.' || ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' ||
+			strings.ContainsRune("!#$%&'*+-/=?^_`{|}~", ch) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func validMessageIDRight(value string) bool {
+	if len(value) >= 2 && value[0] == '[' && value[len(value)-1] == ']' {
+		for _, ch := range value[1 : len(value)-1] {
+			if ch <= 32 || ch >= 127 || ch == '[' || ch == ']' {
+				return false
+			}
+		}
+		return len(value) > 2
+	}
+	return validMessageIDAtom(value)
 }
 
 func ruleMatches(rule config.Rule, msg graph.Message, opts MatchOptions) bool {
@@ -1097,6 +1229,9 @@ func (e *Engine) Resort(ctx context.Context, folder string, opts ResortOptions) 
 			listOpts := graph.ListOptions{Since: opts.Since, Before: before, Fast: opts.Fast}
 			if opts.Fast {
 				listOpts.Fields = []string{"id", "from", "subject", "toRecipients"}
+				if e.rules.RequiresReplyHeaders(false) {
+					listOpts.Fields = append(listOpts.Fields, "internetMessageHeaders")
+				}
 			}
 			err := e.client.StreamMessages(gctx, f.ID, listOpts, func(msg graph.Message) error {
 				lastProgress.Store(time.Now().UnixNano())
@@ -1128,7 +1263,11 @@ func (e *Engine) Resort(ctx context.Context, folder string, opts ResortOptions) 
 					writeCheckpoint()
 				}
 
-				rule := Match(e.rules, msg, MatchOptions{Fast: opts.Fast})
+				evaluation, err := e.EvaluateRules(gctx, msg, MatchOptions{Fast: opts.Fast})
+				if err != nil {
+					return err
+				}
+				rule := evaluation.MatchedRule
 				if rule == nil {
 					reportMu.Lock()
 					report.Unmatched++
@@ -1301,6 +1440,9 @@ func (e *Engine) ResortSender(ctx context.Context, folder, senderPattern string,
 			listOpts := graph.ListOptions{Since: opts.Since, Fast: opts.Fast, SenderFilter: senderPattern}
 			if opts.Fast {
 				listOpts.Fields = []string{"id", "from", "subject", "toRecipients", "receivedDateTime"}
+				if e.rules.RequiresReplyHeaders(false) {
+					listOpts.Fields = append(listOpts.Fields, "internetMessageHeaders")
+				}
 			}
 			err := e.client.StreamMessages(gctx, f.ID, listOpts, func(msg graph.Message) error {
 				lastProgress.Store(time.Now().UnixNano())
@@ -1336,7 +1478,11 @@ func (e *Engine) ResortSender(ctx context.Context, folder, senderPattern string,
 						"elapsed", elapsed.Round(time.Second))
 				}
 
-				rule := Match(e.rules, msg, MatchOptions{Fast: opts.Fast})
+				evaluation, err := e.EvaluateRules(gctx, msg, MatchOptions{Fast: opts.Fast})
+				if err != nil {
+					return err
+				}
+				rule := evaluation.MatchedRule
 				if rule == nil {
 					reportMu.Lock()
 					report.Unmatched++
@@ -1402,9 +1548,20 @@ func (e *Engine) Gaps(ctx context.Context, folder string, opts GapsOptions) (*Ga
 	}
 
 	result := &GapReport{ByDomain: map[string]int{}}
+	listOpts := graph.ListOptions{Fast: opts.Fast}
+	if opts.Fast {
+		listOpts.Fields = []string{"id", "from", "subject", "toRecipients"}
+		if e.rules.RequiresReplyHeaders(false) {
+			listOpts.Fields = append(listOpts.Fields, "internetMessageHeaders")
+		}
+	}
 	for _, f := range folderIDs {
-		err = e.client.StreamMessages(ctx, f.ID, graph.ListOptions{Fields: []string{"id", "from"}, Fast: opts.Fast}, func(msg graph.Message) error {
-			if Match(e.rules, msg, MatchOptions{Fast: opts.Fast, IgnoreCatchall: true}) != nil {
+		err = e.client.StreamMessages(ctx, f.ID, listOpts, func(msg graph.Message) error {
+			evaluation, err := e.EvaluateRules(ctx, msg, MatchOptions{Fast: opts.Fast, IgnoreCatchall: true})
+			if err != nil {
+				return err
+			}
+			if evaluation.MatchedRule != nil {
 				return nil
 			}
 			domain := domainFromEmail(msg.From)
