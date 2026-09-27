@@ -83,6 +83,7 @@ var knownRuleKeys = map[string]bool{
 // knownOnMatchKeys are the valid keys in on_match blocks
 var knownOnMatchKeys = map[string]bool{
 	"mark_read": true, "pushover": true, "flag": true, "categories": true, "exec": true,
+	"importance": true,
 }
 
 // knownExecKeys are the valid keys in exec action blocks
@@ -363,6 +364,7 @@ type OnMatch struct {
 	Pushover   *PushoverRule `yaml:"pushover"`
 	Flag       string        `yaml:"-"` // "flagged", "complete", "notFlagged" (parsed from bool or string)
 	Categories []string      `yaml:"-"` // Outlook categories (colored labels)
+	Importance string        `yaml:"importance"`
 	Exec       *ExecAction   `yaml:"exec"`
 }
 
@@ -379,11 +381,31 @@ type onMatchRaw struct {
 	Pushover   *PushoverRule `yaml:"pushover"`
 	Flag       interface{}   `yaml:"flag"`
 	Categories interface{}   `yaml:"categories"`
+	Importance string        `yaml:"importance"`
 	Exec       *ExecAction   `yaml:"exec"`
 }
 
-// UnmarshalYAML handles flag being either bool or string, and categories being string or array
+// UnmarshalYAML handles flag being either bool or string, categories being
+// string or array, and validates the Microsoft Graph importance enum.
 func (o *OnMatch) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind != yaml.MappingNode {
+		return fmt.Errorf("on_match must be a mapping")
+	}
+	for i := 0; i < len(value.Content); i += 2 {
+		if value.Content[i].Value != "importance" {
+			continue
+		}
+		importance := value.Content[i+1]
+		if importance.Kind != yaml.ScalarNode || importance.Tag != "!!str" {
+			return fmt.Errorf("on_match.importance must be a string (low, normal, or high)")
+		}
+		switch importance.Value {
+		case "low", "normal", "high":
+		default:
+			return fmt.Errorf("on_match.importance must be low, normal, or high; got %q", importance.Value)
+		}
+	}
+
 	var raw onMatchRaw
 	if err := value.Decode(&raw); err != nil {
 		return err
@@ -391,8 +413,8 @@ func (o *OnMatch) UnmarshalYAML(value *yaml.Node) error {
 
 	o.MarkRead = raw.MarkRead
 	o.Pushover = raw.Pushover
+	o.Importance = raw.Importance
 	o.Exec = raw.Exec
-
 	// Handle flag (bool or string)
 	switch v := raw.Flag.(type) {
 	case bool:

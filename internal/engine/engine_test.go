@@ -1200,6 +1200,33 @@ func TestCategoryActionPreservesExistingUntilExactCorrectionRemoved(t *testing.T
 	}
 }
 
+func TestImportanceActionDispatchesToGraph(t *testing.T) {
+	var importance string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch || r.URL.Path != "/me/messages/moved-id" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		var payload map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode importance request: %v", err)
+		}
+		importance = payload["importance"]
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	eng := New(&config.Config{}, &config.RuleSet{}, newEngineTestClient(t, server.URL))
+	rule := &config.Rule{
+		Name:    "important replies",
+		OnMatch: &config.OnMatch{Importance: "high"},
+	}
+	eng.ApplyOnMatch(context.Background(), "moved-id", graph.Message{}, rule, OnMatchOptions{})
+
+	if importance != "high" {
+		t.Fatalf("importance = %q, want high", importance)
+	}
+}
+
 func TestReplyToSentOmittedAndFalseDoNotLookup(t *testing.T) {
 	tests := []struct {
 		name string

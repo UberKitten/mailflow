@@ -1161,6 +1161,23 @@ func (c *Client) MarkRead(ctx context.Context, msgID string) error {
 	return nil
 }
 
+// SetImportance sets the importance of a message.
+func (c *Client) SetImportance(ctx context.Context, msgID, importance string) error {
+	payload := map[string]string{"importance": importance}
+	buf, _ := json.Marshal(payload)
+	endpoint := c.mailboxURL(fmt.Sprintf("messages/%s", msgID))
+	resp, err := c.doWithRetry(ctx, http.MethodPatch, endpoint, bytes.NewReader(buf))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("set importance failed: %s - %s", resp.Status, string(body))
+	}
+	return nil
+}
+
 // FlagMessage sets the follow-up flag on a message.
 // status can be: "flagged", "complete", or "notFlagged"
 func (c *Client) FlagMessage(ctx context.Context, msgID string, status string) error {

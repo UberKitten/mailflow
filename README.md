@@ -139,6 +139,7 @@ rules:
     categories:                # Outlook categories to apply
       - "Important"
     on_match:                  # actions on match
+      importance: high         # Graph importance: low, normal, or high
       pushover:
         title: "Alert"
         priority: 1
@@ -152,6 +153,9 @@ to `false`. When `true`, mailflow parses RFC Message-IDs from the fetched
 `In-Reply-To` and `References` headers and matches only when at least one
 referenced message exists in **Sent Items**. It does not use conversation IDs,
 and a reference to a message elsewhere in the mailbox does not match.
+
+`on_match.importance` sets the Microsoft Graph message importance and accepts
+`low`, `normal`, or `high`.
 
 ### Sender lists (`senders.d/`)
 

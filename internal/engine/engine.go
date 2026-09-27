@@ -292,6 +292,14 @@ func (e *Engine) executeOnMatch(ctx context.Context, msgID string, msg graph.Mes
 				slog.Debug("flagged message", "id", msgID, "flag", rule.OnMatch.Flag)
 			}
 		}
+
+		if rule.OnMatch.Importance != "" {
+			if err := e.client.SetImportance(ctx, msgID, rule.OnMatch.Importance); err != nil {
+				slog.Warn("set importance failed", "id", msgID, "importance", rule.OnMatch.Importance, "error", err)
+			} else {
+				slog.Debug("set importance", "id", msgID, "importance", rule.OnMatch.Importance)
+			}
+		}
 	}
 
 	if len(mergedCategories) > 0 {

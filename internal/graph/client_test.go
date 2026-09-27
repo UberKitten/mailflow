@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"mailflow/internal/config"
@@ -150,6 +151,49 @@ func TestListMessagesAPIFailure(t *testing.T) {
 	_, err := client.ListMessages(context.Background(), "folder", ListOptions{})
 	if err == nil {
 		t.Fatalf("expected list messages error")
+	}
+}
+
+func TestSetImportancePatchesMessage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			t.Errorf("method = %s, want PATCH", r.Method)
+		}
+		if r.URL.Path != "/me/messages/message-id" {
+			t.Errorf("path = %s, want /me/messages/message-id", r.URL.Path)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		if got, want := string(body), `{"importance":"high"}`; got != want {
+			t.Errorf("body = %s, want %s", got, want)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server.URL, writeScript(t, t.TempDir()))
+	client.httpClient = server.Client()
+	if err := client.SetImportance(context.Background(), "message-id", "high"); err != nil {
+		t.Fatalf("SetImportance: %v", err)
+	}
+}
+
+func TestSetImportanceReportsGraphFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "invalid importance", http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server.URL, writeScript(t, t.TempDir()))
+	client.httpClient = server.Client()
+	err := client.SetImportance(context.Background(), "message-id", "high")
+	if err == nil {
+		t.Fatal("SetImportance succeeded, want Graph failure")
+	}
+	if !strings.Contains(err.Error(), "400 Bad Request") || !strings.Contains(err.Error(), "invalid importance") {
+		t.Fatalf("error = %q, want Graph status and response body", err)
 	}
 }
 

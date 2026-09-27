@@ -861,3 +861,50 @@ func TestReplyToSentRejectsMissingOrNonBooleanValues(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadParsesHighImportance(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "config.yaml"), "include:\n  - rules.d/*.yaml\n")
+	writeFile(t, filepath.Join(dir, "rules.d", "importance.yaml"), `version: 1
+rules:
+  - name: importance
+    folder: Inbox
+    catchall: true
+    on_match:
+      importance: high
+`)
+
+	_, rules, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := rules.Rules[0].OnMatch.Importance; got != "high" {
+		t.Fatalf("importance = %q, want high", got)
+	}
+}
+
+func TestLoadRejectsInvalidImportance(t *testing.T) {
+	tests := []struct {
+		name       string
+		importance string
+	}{
+		{name: "unknown value", importance: "urgent"},
+		{name: "non-string value", importance: "7"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFile(t, filepath.Join(dir, "config.yaml"), "include:\n  - rules.d/*.yaml\n")
+			writeFile(t, filepath.Join(dir, "rules.d", "importance.yaml"), "version: 1\nrules:\n  - name: importance\n    folder: Inbox\n    catchall: true\n    on_match:\n      importance: "+tt.importance+"\n")
+
+			_, _, err := Load(dir)
+			if err == nil {
+				t.Fatal("Load succeeded, want importance validation error")
+			}
+			if !strings.Contains(err.Error(), "on_match.importance") {
+				t.Fatalf("error = %q, want useful importance context", err)
+			}
+		})
+	}
+}
