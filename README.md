@@ -252,6 +252,37 @@ The recommended flow for rule changes:
 
 Keeping config in a separate (private) repo lets you version-control your rules without exposing your sender lists publicly.
 
+### Runtime security maintenance
+
+The image and CI pin supported Go `1.26.10`; the runtime base is Alpine
+`3.24.3`. Go 1.24 is no longer supported. Go's compatibility promise permits
+the unchanged Go 1.24 language-level source to build on the maintained compiler;
+keep `go.mod` and `go.sum` unchanged unless a separately reviewed dependency
+security patch is required. Run the existing `go test ./...` gate and the
+Dockerfile's static Linux build before publication. Never start a second
+webhook/poller with production credentials as a build check.
+
+For production image changes, the canonical contract is
+`homelab-infra/README.md`, **Mailflow image rollout and rollback**, with
+`ansible/bin/apps-vms playbooks/deploy-mailflow.yml` on `private-apps`.
+The application source and controller must be clean, reviewed, pushed, and
+equal to their upstream revisions before either stage. Publish through the
+existing CI, bind the OCI revision to the exact source commit, then commit
+and push only the controller's corresponding immutable image pin. Do not
+bypass these guards or include unrelated local commits or rule changes.
+
+The stage/deploy transaction retains root-only prior image, Compose,
+environment, and config preimages; verifies stable config identity and
+unrelated container lifecycles; and recreates only the existing Mailflow
+service. Acceptance requires actual compiled Go provenance, direct `/health`,
+expected protected/public routing, unchanged config/rules/token state and
+environment, and clean bounded startup. This maintenance authorizes no mailbox
+reads, manual processing, test messages, rule deployment, or credential changes.
+Interactive mailbox operations remain exclusively on the canonical `ms365`
+surface. Rollback is deliberate and operator-assisted through the paired
+canonical rollback playbook; never restore vulnerable code automatically or
+overwrite newer config/token state.
+
 ## License
 
 MIT

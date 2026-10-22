@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:1.24-alpine AS builder
+FROM golang:1.26.10-alpine3.24 AS builder
 
 WORKDIR /app
 
@@ -14,7 +14,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o mailflow ./cmd/mailflow
 
 # Runtime stage
-FROM alpine:3.21
+FROM alpine:3.24.3
 
 RUN apk --no-cache add ca-certificates tzdata bash wget curl jq openssh-client
 
