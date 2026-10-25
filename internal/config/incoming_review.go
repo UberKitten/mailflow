@@ -1,7 +1,9 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"net/mail"
 	"net/url"
 	"os"
@@ -33,6 +35,43 @@ func (c *IncomingReviewConfig) UnmarshalYAML(node *yaml.Node) error {
 	}
 	type plain IncomingReviewConfig
 	return node.Decode((*plain)(c))
+}
+
+// loadIncomingReview reads only this feature's nonsecret, separately versioned
+// sidecar. The credential-bearing base config stays outside source control.
+func (c *Config) loadIncomingReview(configDir string) error {
+	path := filepath.Join(configDir, "incoming-review.yaml")
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect incoming-review.yaml: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Size() > 64*1024 {
+		return fmt.Errorf("incoming-review.yaml must be a bounded regular file")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read incoming-review.yaml: %w", err)
+	}
+	var sidecar struct {
+		IncomingReview *IncomingReviewConfig `yaml:"incoming_review"`
+	}
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&sidecar); err != nil {
+		return fmt.Errorf("parse incoming-review.yaml: %w", err)
+	}
+	var extra interface{}
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return fmt.Errorf("incoming-review.yaml must contain exactly one document")
+	}
+	if sidecar.IncomingReview == nil {
+		return fmt.Errorf("incoming-review.yaml requires incoming_review mapping")
+	}
+	c.IncomingReview = sidecar.IncomingReview
+	return nil
 }
 
 func (c *Config) validateIncomingReview(configDir string) error {

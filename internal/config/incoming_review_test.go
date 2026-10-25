@@ -24,6 +24,19 @@ incoming_review:
   spool_dir: .incoming-review
 `
 
+func writeIncomingFixture(t *testing.T, dir, data string) {
+	t.Helper()
+	parts := strings.SplitN(data, "incoming_review:\n", 2)
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(parts[0]), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if len(parts) == 2 {
+		if err := os.WriteFile(filepath.Join(dir, "incoming-review.yaml"), []byte("incoming_review:\n"+parts[1]), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestIncomingReviewConfigValidation(t *testing.T) {
 	cases := map[string][2]string{
 		"missing mailbox":        {"mailbox: review@example.com", "mailbox: ''"},
@@ -54,9 +67,7 @@ func TestIncomingReviewConfigValidation(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
 			data := strings.ReplaceAll(incomingConfigFixture, change[0], change[1])
-			if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(data), 0o600); err != nil {
-				t.Fatal(err)
-			}
+			writeIncomingFixture(t, dir, data)
 			if _, err := LoadMainConfig(dir); err == nil {
 				t.Fatal("invalid incoming review config accepted")
 			}
@@ -66,9 +77,7 @@ func TestIncomingReviewConfigValidation(t *testing.T) {
 
 func TestIncomingReviewConfigResolvesPrivateSpoolWithoutCredentials(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(incomingConfigFixture), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writeIncomingFixture(t, dir, incomingConfigFixture)
 	cfg, err := LoadMainConfig(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -86,9 +95,7 @@ func TestIncomingReviewConfigNormalizesConfiguredMailbox(t *testing.T) {
 		t.Run(mailbox, func(t *testing.T) {
 			dir := t.TempDir()
 			data := strings.ReplaceAll(incomingConfigFixture, "mailbox: review@example.com", "mailbox: '"+mailbox+"'")
-			if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(data), 0o600); err != nil {
-				t.Fatal(err)
-			}
+			writeIncomingFixture(t, dir, data)
 			cfg, err := LoadMainConfig(dir)
 			if err != nil {
 				t.Fatal(err)
@@ -116,13 +123,41 @@ func TestIncomingReviewAbsentPreservesExistingConfiguration(t *testing.T) {
 
 func TestIncomingReviewConfigRejectsSymlinkSpool(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(incomingConfigFixture), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writeIncomingFixture(t, dir, incomingConfigFixture)
 	if err := os.Symlink(t.TempDir(), filepath.Join(dir, ".incoming-review")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := LoadMainConfig(dir); err == nil {
 		t.Fatal("incoming spool symlink escaped private subtree")
+	}
+}
+
+func TestIncomingReviewSidecarRejectsUnsafeOrUnknownSource(t *testing.T) {
+	for _, data := range []string{"other_feature: true", "incoming_review: null", "incoming_review: {}\n---\nincoming_review: {}"} {
+		t.Run(data, func(t *testing.T) {
+			dir := t.TempDir()
+			writeIncomingFixture(t, dir, incomingConfigFixture)
+			if err := os.WriteFile(filepath.Join(dir, "incoming-review.yaml"), []byte(data), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadMainConfig(dir); err == nil {
+				t.Fatal("invalid feature sidecar accepted")
+			}
+		})
+	}
+}
+
+func TestIncomingReviewSidecarRejectsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	writeIncomingFixture(t, dir, incomingConfigFixture)
+	path := filepath.Join(dir, "incoming-review.yaml")
+	if err := os.Rename(path, path+".real"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(path+".real", path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadMainConfig(dir); err == nil {
+		t.Fatal("symlink feature sidecar accepted")
 	}
 }

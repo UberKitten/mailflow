@@ -121,8 +121,9 @@ polling, sweeps, or startup resort. Provisioning and application mailbox
 authorization must be completed by an authorized Exchange administrator before
 enabling it.
 
-Add this optional top-level section to the daemon's existing certificate-auth
-configuration:
+Create optional `incoming-review.yaml` in the daemon's config directory. Keep
+this nonsecret feature file in the private configuration repository; the
+existing credential-bearing `config.yaml` is unchanged:
 
 ```yaml
 incoming_review:
@@ -145,8 +146,9 @@ webhook and `/health`. `graph.auth_mode: cert`, `client_id`, `tenant_id`, and
 `cert_path` are required. The spool must be explicitly configured inside the
 config directory's private `.incoming-review` subtree (a relative
 `.incoming-review` is also accepted). Existing subtree directories must be
-private, without symlinks. With this section absent, no extra endpoint, state,
-subscription, or credential access is added.
+private, without symlinks. With this file absent, no extra endpoint, state,
+subscription, or credential access is added. Unknown fields, multiple YAML
+documents, and symlink sidecars are rejected.
 
 The extra subscription watches `users/{mailbox_object_id}/messages`, requests
 Graph immutable IDs on creation and renewal, and has its own notification URL

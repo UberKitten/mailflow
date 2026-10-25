@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"mailflow/internal/config"
@@ -47,7 +48,13 @@ incoming_review:
 				}
 				want = "{\"events\":[" + record + "]}\n"
 			}
-			if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(configuration), 0o600); err != nil {
+			parts := strings.SplitN(configuration, "incoming_review:\n", 2)
+			if len(parts) == 2 {
+				if err := os.WriteFile(filepath.Join(dir, "incoming-review.yaml"), []byte("incoming_review:\n"+parts[1]), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(parts[0]), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			cmd := &cobra.Command{Use: "mailflow"}
