@@ -18,6 +18,7 @@ var knownConfigKeys = map[string]bool{
 	"include": true, "graph": true, "pushover": true, "process": true, "webhook": true,
 	"folder_categories": true,
 	"envelope_lookup":   true,
+	"incoming_review":   true,
 }
 
 // knownGraphKeys are the valid keys in the graph section
@@ -207,6 +208,7 @@ type Config struct {
 	Pushover         Pushover              `yaml:"pushover"`
 	Process          ProcessConfig         `yaml:"process"`
 	Webhook          WebhookConfig         `yaml:"webhook"`
+	IncomingReview   *IncomingReviewConfig `yaml:"incoming_review"`
 	EnvelopeLookup   *EnvelopeLookupConfig `yaml:"envelope_lookup"`
 	FolderCategories []FolderCategory      `yaml:"folder_categories"`
 }
@@ -560,6 +562,9 @@ func LoadMainConfig(configDir string) (*Config, error) {
 		if cfg.EnvelopeLookup.Timeout <= 0 {
 			cfg.EnvelopeLookup.Timeout = 10
 		}
+	}
+	if err := cfg.validateIncomingReview(configDir); err != nil {
+		return nil, err
 	}
 
 	return &cfg, nil

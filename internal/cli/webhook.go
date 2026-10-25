@@ -85,6 +85,10 @@ func runWebhook(cmd *cobra.Command, args []string) error {
 	}
 
 	server := webhook.New(whCfg, handler)
+	incomingManager, err := configureIncomingReview(cfg, server, client.GetToken)
+	if err != nil {
+		return err
+	}
 
 	// Resolve the watch folder once for processing, then derive the subscription
 	// resource from the same mailbox principal used by ordinary Graph requests.
@@ -276,6 +280,19 @@ func runWebhook(cmd *cobra.Command, args []string) error {
 	// Start renewal loop
 	go subMgr.StartRenewalLoop(ctx)
 
+	if incomingManager != nil {
+		incomingCtx, incomingCancel := context.WithCancel(ctx)
+		incomingDone := make(chan struct{})
+		go func() {
+			defer close(incomingDone)
+			runIncomingReviewSubscription(incomingCtx, incomingManager, retryInterval)
+		}()
+		defer func() {
+			incomingCancel()
+			<-incomingDone
+		}()
+	}
+
 	// Start periodic sweep (runs regardless of webhook subscription status)
 	startSweep()
 
@@ -319,6 +336,10 @@ func runWebhook(cmd *cobra.Command, args []string) error {
 				newCfg, newRules, err := config.Load(cfgDir)
 				if err != nil {
 					slog.Error("reload failed", "error", err)
+					continue
+				}
+				if !sameIncomingReviewConfig(cfg, newCfg) {
+					slog.Error("incoming_review source changes require a daemon restart")
 					continue
 				}
 				if err := eng.Reload(newCfg, newRules); err != nil {

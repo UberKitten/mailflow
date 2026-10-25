@@ -61,6 +61,8 @@ type Server struct {
 	clientState   string
 	lastProcessed time.Time
 	stateFile     string
+	incomingPath  string
+	incoming      *IncomingReview
 }
 
 // New creates a webhook server
@@ -114,21 +116,35 @@ func (s *Server) LastProcessedTime() time.Time {
 	return s.lastProcessed
 }
 
+// SetIncomingReview adds metadata capture to this listener before Start.
+// Configuration validation owns path/origin checks; sorting remains independent.
+func (s *Server) SetIncomingReview(path string, capture *IncomingReview) {
+	s.incomingPath = path
+	s.incoming = capture
+}
+
 // Start the webhook server
 func (s *Server) Start() error {
-	mux := http.NewServeMux()
-	mux.HandleFunc(s.config.Path, s.handleWebhook)
-	mux.HandleFunc("/health", s.handleHealth)
-
 	s.server = &http.Server{
 		Addr:         fmt.Sprintf(":%d", s.config.Port),
-		Handler:      mux,
+		Handler:      s.routes(),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 	}
 
 	slog.Info("starting webhook server", "port", s.config.Port, "path", s.config.Path)
 	return s.server.ListenAndServe()
+}
+
+func (s *Server) routes() *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc(s.config.Path, s.handleWebhook)
+	mux.HandleFunc("/health", s.handleHealth)
+	if s.incoming != nil {
+		mux.Handle(s.incomingPath, s.incoming)
+	}
+
+	return mux
 }
 
 // Stop gracefully shuts down the server

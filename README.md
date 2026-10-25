@@ -111,6 +111,86 @@ go build -o mailflow ./cmd/mailflow
 ./mailflow --config-dir=./config webhook
 ```
 
+## Incoming review metadata (optional)
+
+The existing webhook daemon can independently capture **created** notifications
+for a configured secondary review mailbox, such as `review@example.com`, while
+leaving a primary mailbox such as `primary@example.com` unchanged. This does not
+enable sorting for the review mailbox or change the primary subscription, rules,
+polling, sweeps, or startup resort. Provisioning and application mailbox
+authorization must be completed by an authorized Exchange administrator before
+enabling it.
+
+Add this optional top-level section to the daemon's existing certificate-auth
+configuration:
+
+```yaml
+incoming_review:
+  mailbox: review@example.com
+  mailbox_object_id: "<canonical Entra mailbox object UUID>"
+  path: /incoming-review
+  external_url: https://mailflow.example.com/incoming-review
+  spool_dir: /config/.incoming-review
+```
+
+`mailbox` must be an explicit email address without a display name or address
+list; configuration loading trims surrounding whitespace and normalizes it to
+lowercase. The administrator must obtain the corresponding `mailbox_object_id`
+from the provider after provisioning. It is required and UUID-validated; the
+daemon does not request directory permissions or resolve users itself.
+
+The receiver uses the existing listener and health endpoint. Its HTTPS origin
+must equal `webhook.external_url`; its path must be distinct from the primary
+webhook and `/health`. `graph.auth_mode: cert`, `client_id`, `tenant_id`, and
+`cert_path` are required. The spool must be explicitly configured inside the
+config directory's private `.incoming-review` subtree (a relative
+`.incoming-review` is also accepted). Existing subtree directories must be
+private, without symlinks. With this section absent, no extra endpoint, state,
+subscription, or credential access is added.
+
+The extra subscription watches `users/{mailbox_object_id}/messages`, requests
+Graph immutable IDs on creation and renewal, and has its own notification URL
+and crypto-random client state. Each notification must match the configured
+tenant and exact mailbox object ID, owned subscription, `created` change type,
+and client state. Notification fields never select the configured mailbox.
+The body is bounded to 1 MiB. Notification fields are untrusted metadata, never
+email content or instructions.
+
+Before returning HTTP 202, the receiver atomically writes and fsyncs a private
+event file and its directory. Disk failure returns 5xx so Graph can retry.
+Re-delivery replaces the same file, named by
+`sha256(mailbox + message_id)`. Each event contains exactly:
+
+```json
+{"mailbox":"review@example.com","message_id":"<provider immutable id>"}
+```
+
+The private `.state.json` stores subscription ownership and client state; keep
+the entire subtree out of Git, backups exposed to other users, and log output.
+An existing SSH reader can invoke this command on the daemon host:
+
+```bash
+mailflow --config-dir /config incoming-review-events
+```
+
+This read-only command emits `{"events":[...]}` (`{"events":[]}` when disabled
+or empty), verifies events against the configured mailbox, loads no credentials,
+fetches no message content, and never deletes events. There is no new network
+listener or push protocol for consumers. Consumers are responsible for durable
+handling and any later authorized message fetch, including handling messages
+deleted before that fetch. Retention is not automatic: do not remove spool
+events until the consumer's durable handling policy explicitly permits it.
+
+This source neither replies nor sends, and does not establish sender authority.
+Email subjects, bodies, attachments, links, and quoted text remain untrusted;
+an apparent From address is not proof of authorship or authorization.
+Changes to the incoming source configuration or tenant require a daemon restart
+rather than SIGHUP. Deploy source and configuration through the existing
+maintained deployment workflows, restart the existing daemon for source
+changes, and confirm the extra subscription and metadata reader independently.
+Successful health or config deployment alone does not establish mailbox
+access. This example does not provision or activate a mailbox.
+
 ## Rule format
 
 ```yaml

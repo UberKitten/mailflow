@@ -30,6 +30,7 @@ type SubscriptionManager struct {
 	clientState    string
 	resource       string
 	subscriptionID string
+	incoming       *IncomingReview
 }
 
 // NewSubscriptionManager creates a new manager.
@@ -45,6 +46,9 @@ func NewSubscriptionManager(baseURL string, tokenFunc func() (string, error), no
 
 // CreateOrRenew ensures an active subscription exists
 func (m *SubscriptionManager) CreateOrRenew(ctx context.Context) error {
+	if m.incoming != nil {
+		return m.createOrRenewIncoming(ctx)
+	}
 	if m.resource == "" {
 		return fmt.Errorf("create subscription: mailbox resource is required")
 	}
@@ -119,6 +123,9 @@ func (m *SubscriptionManager) create(ctx context.Context) error {
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
+	if m.incoming != nil {
+		req.Header.Set("Prefer", `IdType="ImmutableId"`)
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -129,6 +136,9 @@ func (m *SubscriptionManager) create(ctx context.Context) error {
 	respBody, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode != http.StatusCreated {
+		if m.incoming != nil {
+			return fmt.Errorf("create incoming review subscription failed: %s", resp.Status)
+		}
 		return fmt.Errorf("create subscription failed: %s - %s", resp.Status, string(respBody))
 	}
 
@@ -137,7 +147,15 @@ func (m *SubscriptionManager) create(ctx context.Context) error {
 		return fmt.Errorf("parse response: %w", err)
 	}
 
+	if m.incoming != nil && !validIncomingSubscriptionID(created.ID) {
+		return fmt.Errorf("invalid incoming review subscription ID")
+	}
 	m.subscriptionID = created.ID
+	if m.incoming != nil {
+		if err := m.incoming.setSubscriptionID(created.ID); err != nil {
+			return fmt.Errorf("persist incoming review subscription: %w", err)
+		}
+	}
 	slog.Info("created subscription", "id", created.ID, "expires", created.ExpirationDateTime)
 	return nil
 }
@@ -159,6 +177,9 @@ func (m *SubscriptionManager) renew(ctx context.Context, id string) error {
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
+	if m.incoming != nil {
+		req.Header.Set("Prefer", `IdType="ImmutableId"`)
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -167,6 +188,9 @@ func (m *SubscriptionManager) renew(ctx context.Context, id string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		if m.incoming != nil {
+			return fmt.Errorf("renew incoming review subscription failed: %s", resp.Status)
+		}
 		respBody, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("renew failed: %s - %s", resp.Status, string(respBody))
 	}
