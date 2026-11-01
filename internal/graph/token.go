@@ -1,6 +1,7 @@
 package graph
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,8 +11,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
+
+	"golang.org/x/sync/semaphore"
 )
 
 // tokenProvider handles OAuth2 token refresh for Microsoft Graph API.
@@ -21,7 +23,7 @@ type tokenProvider struct {
 	tenantID  string
 	tokenFile string
 
-	mu          sync.Mutex
+	mu          *semaphore.Weighted
 	accessToken string
 	expiresAt   time.Time
 }
@@ -38,6 +40,7 @@ type tokenResponse struct {
 
 func newTokenProvider(clientID, tenantID, tokenFile string) (*tokenProvider, error) {
 	tp := &tokenProvider{
+		mu:        semaphore.NewWeighted(1),
 		clientID:  clientID,
 		tenantID:  tenantID,
 		tokenFile: tokenFile,
@@ -51,9 +54,11 @@ func newTokenProvider(clientID, tenantID, tokenFile string) (*tokenProvider, err
 	return tp, nil
 }
 
-func (tp *tokenProvider) getToken() (string, error) {
-	tp.mu.Lock()
-	defer tp.mu.Unlock()
+func (tp *tokenProvider) getToken(ctx context.Context) (string, error) {
+	if err := tp.mu.Acquire(ctx, 1); err != nil {
+		return "", err
+	}
+	defer tp.mu.Release(1)
 
 	// Return cached token if still valid (with 5 min buffer)
 	if tp.accessToken != "" && time.Now().Add(5*time.Minute).Before(tp.expiresAt) {
@@ -61,7 +66,7 @@ func (tp *tokenProvider) getToken() (string, error) {
 	}
 
 	// Need to refresh
-	if err := tp.refresh(); err != nil {
+	if err := tp.refresh(ctx); err != nil {
 		return "", err
 	}
 
@@ -100,7 +105,7 @@ func (tp *tokenProvider) loadCached() error {
 	return nil
 }
 
-func (tp *tokenProvider) refresh() error {
+func (tp *tokenProvider) refresh(ctx context.Context) error {
 	// Read current refresh token from file
 	data, err := os.ReadFile(tp.tokenFile)
 	if err != nil {
@@ -124,7 +129,12 @@ func (tp *tokenProvider) refresh() error {
 		"refresh_token": {cached.RefreshToken},
 	}
 
-	resp, err := http.PostForm(tokenURL, form)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return fmt.Errorf("token refresh request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("token refresh request: %w", err)
 	}
@@ -171,9 +181,14 @@ func (tp *tokenProvider) refresh() error {
 }
 
 // tokenFromScript gets a token by executing an external script (legacy mode).
-func tokenFromScript(scriptPath string) (string, error) {
-	cmd := exec.Command(filepath.Clean(scriptPath))
+func tokenFromScript(ctx context.Context, scriptPath string) (string, error) {
+	cmd := exec.CommandContext(ctx, filepath.Clean(scriptPath))
+	// Bound waiting on inherited stdout/stderr pipes after cancellation.
+	cmd.WaitDelay = time.Second
 	out, err := cmd.Output()
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if err != nil {
 		return "", fmt.Errorf("token script failed: %w", err)
 	}

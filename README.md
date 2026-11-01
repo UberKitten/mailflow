@@ -47,6 +47,27 @@ When a new sender appears, it lands in Unsorted — making it obvious you need a
 - **Bulk resort** — `mailflow resort` re-evaluates and moves existing mail
 - **Actions** — trigger scripts on match (e.g., import PDF attachments to Paperless-ngx)
 
+### Graph request limits
+
+The daemon Graph client allows at most six attempts per operation under a
+five-minute context budget (or the caller's earlier deadline). Authentication
+requests, token-provider queueing, semaphore waits, retry waits, and response
+reads share that context; a canceled legacy token script may need up to one
+additional second to drain inherited output pipes. Local filesystem operations
+still depend on the host filesystem.
+
+Valid numeric or HTTP-date `Retry-After` headers are minimum waits, never
+shortened by jitter. Throttling pauses other requests on the same client/mailbox,
+and a later throttle can extend but never shorten that cooldown. Invalid,
+negative, and overflowing values fall back to bounded exponential backoff.
+The configured concurrency limit includes open response bodies, not just
+requests waiting for headers.
+
+Retries require a reproducible request body. A 429 can retry a rejected mutation;
+ambiguous 5xx responses retry only idempotent HTTP methods, not POST or PATCH.
+Transport errors are returned without replay. Callers must close every returned
+response body to release its permit and context.
+
 ## Quick start
 
 ### 1. Set up Graph API auth

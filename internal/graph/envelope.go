@@ -37,7 +37,7 @@ func (c *Client) MessageTrace(ctx context.Context, senderAddress string, receive
 		return nil, fmt.Errorf("message trace requires cert_path in graph config")
 	}
 
-	token, err := c.certTokenProvider.getToken()
+	token, err := c.certTokenProvider.getToken(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("get app-only token: %w", err)
 	}

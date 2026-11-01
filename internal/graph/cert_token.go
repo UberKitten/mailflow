@@ -1,6 +1,7 @@
 package graph
 
 import (
+	"context"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
@@ -14,9 +15,9 @@ import (
 	"net/url"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
+	"golang.org/x/sync/semaphore"
 	gopkcs12 "software.sslmate.com/src/go-pkcs12"
 )
 
@@ -29,7 +30,7 @@ type certTokenProvider struct {
 	certPass string
 	scope    string
 
-	mu          sync.Mutex
+	mu          *semaphore.Weighted
 	accessToken string
 	expiresAt   time.Time
 
@@ -58,6 +59,7 @@ func newCertTokenProvider(clientID, tenantID, certPath, certPasswordFile, scope 
 	}
 
 	return &certTokenProvider{
+		mu:       semaphore.NewWeighted(1),
 		clientID: clientID,
 		tenantID: tenantID,
 		certPath: certPath,
@@ -82,18 +84,20 @@ func parsePFX(pfxData []byte, password string) (*rsa.PrivateKey, []byte, error) 
 	return rsaKey, cert.Raw, nil
 }
 
-func (p *certTokenProvider) getToken() (string, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+func (p *certTokenProvider) getToken(ctx context.Context) (string, error) {
+	if err := p.mu.Acquire(ctx, 1); err != nil {
+		return "", err
+	}
+	defer p.mu.Release(1)
 
 	if p.accessToken != "" && time.Now().Add(5*time.Minute).Before(p.expiresAt) {
 		return p.accessToken, nil
 	}
 
-	return p.refresh()
+	return p.refresh(ctx)
 }
 
-func (p *certTokenProvider) refresh() (string, error) {
+func (p *certTokenProvider) refresh(ctx context.Context) (string, error) {
 	assertion, err := p.buildAssertion()
 	if err != nil {
 		return "", fmt.Errorf("build JWT assertion: %w", err)
@@ -109,7 +113,12 @@ func (p *certTokenProvider) refresh() (string, error) {
 		"scope":                 {p.scope},
 	}
 
-	resp, err := http.PostForm(tokenURL, form)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", fmt.Errorf("cert token request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("cert token request: %w", err)
 	}

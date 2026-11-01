@@ -42,6 +42,9 @@ type Client struct {
 	rng                  *rand.Rand
 	rngMu                sync.Mutex
 
+	cooldownMu    sync.Mutex
+	cooldownUntil time.Time
+
 	// Metrics
 	requestCount   int64
 	retryCount     int64
@@ -211,19 +214,21 @@ type listResponse struct {
 	NextLink string         `json:"@odata.nextLink"`
 }
 
-func (c *Client) token() (string, error) {
+func (c *Client) token(ctx context.Context) (string, error) {
 	if c.useCertAsPrimary && c.certTokenProvider != nil {
-		return c.certTokenProvider.getToken()
+		return c.certTokenProvider.getToken(ctx)
 	}
 	if c.tokenProvider != nil {
-		return c.tokenProvider.getToken()
+		return c.tokenProvider.getToken(ctx)
 	}
-	return tokenFromScript(c.tokenScript)
+	return tokenFromScript(ctx, c.tokenScript)
 }
 
 // GetToken returns a valid access token (public wrapper for subscription manager)
 func (c *Client) GetToken() (string, error) {
-	return c.token()
+	ctx, cancel := context.WithTimeout(context.Background(), graphRetryBudget)
+	defer cancel()
+	return c.token(ctx)
 }
 
 // HasCertAuth returns true if cert-based app-only auth is configured (for message trace).
@@ -231,20 +236,115 @@ func (c *Client) HasCertAuth() bool {
 	return c.certTokenProvider != nil
 }
 
-func (c *Client) do(ctx context.Context, method, url string, body io.Reader) (*http.Response, error) {
+// graphRetryBudget bounds authentication, queueing, cooldowns, attempts, and body reads.
+const graphRetryBudget = 5 * time.Minute
+
+// responseBody keeps request resources until the caller closes the response.
+type responseBody struct {
+	io.ReadCloser
+	once    sync.Once
+	onClose func()
+	cancel  context.CancelFunc
+	err     error
+}
+
+func (b *responseBody) Close() error {
+	b.once.Do(func() {
+		b.err = b.ReadCloser.Close()
+		b.onClose()
+		if b.cancel != nil {
+			b.cancel()
+		}
+	})
+	return b.err
+}
+
+func (c *Client) extendCooldown(delay time.Duration) {
+	until := time.Now().Add(delay)
+	c.cooldownMu.Lock()
+	if until.After(c.cooldownUntil) {
+		c.cooldownUntil = until
+	}
+	c.cooldownMu.Unlock()
+}
+
+func (c *Client) waitCooldown(ctx context.Context) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		c.cooldownMu.Lock()
+		delay := time.Until(c.cooldownUntil)
+		c.cooldownMu.Unlock()
+		if delay <= 0 {
+			return nil
+		}
+		if err := waitRetry(ctx, delay); err != nil {
+			return err
+		}
+		// Another response may have extended the mailbox cooldown while we waited.
+	}
+}
+
+func waitRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return ctx.Err()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (c *Client) do(req *http.Request) (*http.Response, error) {
+	ctx := req.Context()
+	if err := c.waitCooldown(ctx); err != nil {
+		return nil, err
+	}
+	release := func() {}
 	if c.sema != nil {
 		select {
 		case c.sema <- struct{}{}:
+			release = func() { <-c.sema }
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
-		defer func() { <-c.sema }()
 	}
-
-	token, err := c.token()
-	if err != nil {
+	// A throttle may have arrived while this request was queued for a permit.
+	if err := c.waitCooldown(ctx); err != nil {
+		release()
 		return nil, err
 	}
+	token, err := c.token(ctx)
+	if err != nil {
+		release()
+		return nil, err
+	}
+	// Authentication can block while another request establishes a cooldown.
+	if err := c.waitCooldown(ctx); err != nil {
+		release()
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		release()
+		return nil, err
+	}
+	resp.Body = &responseBody{ReadCloser: resp.Body, onClose: release}
+	return resp, nil
+}
+
+func (c *Client) doWithRetry(ctx context.Context, method, url string, body io.Reader) (*http.Response, error) {
+	const maxRetries = 5
+	ctx, cancel := context.WithTimeout(ctx, graphRetryBudget)
+	returned := false
+	defer func() {
+		if !returned {
+			cancel()
+		}
+	}()
 	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
 		return nil, err
@@ -252,63 +352,95 @@ func (c *Client) do(ctx context.Context, method, url string, body io.Reader) (*h
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	return c.httpClient.Do(req)
-}
-
-func (c *Client) doWithRetry(ctx context.Context, method, url string, body io.Reader) (*http.Response, error) {
-	const maxRetries = 5
 	for attempt := 0; ; attempt++ {
-		// Track request count
-		c.requestCountMu.Lock()
-		c.requestCount++
-		c.requestCountMu.Unlock()
-
-		resp, err := c.do(ctx, method, url, body)
-		if err != nil {
-			return nil, err
-		}
-		if resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests {
-			return resp, nil
-		}
-
-		if attempt >= maxRetries {
-			resp.Body.Close()
-			return nil, fmt.Errorf("request failed after retries: %s", resp.Status)
-		}
-
-		// Track retry count
-		c.requestCountMu.Lock()
-		c.retryCount++
-		c.requestCountMu.Unlock()
-
-		delay := time.Second * time.Duration(1<<attempt)
-		if resp.StatusCode == http.StatusTooManyRequests {
-			if retryAfter, ok := parseRetryAfter(resp.Header.Get("Retry-After")); ok {
-				delay = retryAfter
+		if attempt > 0 && req.GetBody != nil {
+			req.Body, err = req.GetBody()
+			if err != nil {
+				return nil, fmt.Errorf("recreate Graph request body: %w", err)
 			}
 		}
-		delay = c.jitter(delay)
-		slog.Warn("graph request retry", "status", resp.Status, "attempt", attempt+1, "delay", delay, "url", url)
-		resp.Body.Close()
-
-		select {
-		case <-time.After(delay):
-		case <-ctx.Done():
-			return nil, ctx.Err()
+		c.requestCountMu.Lock()
+		c.requestCount++
+		if attempt > 0 {
+			c.retryCount++
 		}
+		c.requestCountMu.Unlock()
+
+		resp, err := c.do(req)
+		if err != nil {
+			if req.Body != nil {
+				req.Body.Close()
+			}
+			return nil, err
+		}
+		retryableStatus := resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests
+		delay := time.Duration(0)
+		sharedDelay := false
+		if retryableStatus {
+			if retryAfter, ok := parseRetryAfter(resp.Header.Get("Retry-After")); ok {
+				// Retry-After is a server minimum, never subject to negative jitter.
+				delay = retryAfter
+				sharedDelay = true
+			} else {
+				delay = c.jitter(time.Second * time.Duration(1<<attempt))
+				sharedDelay = resp.StatusCode == http.StatusTooManyRequests
+			}
+			if sharedDelay {
+				// Publish even on the final attempt, or for a non-replayable request.
+				c.extendCooldown(delay)
+			}
+		}
+		// A 429 explicitly rejects the operation. A 5xx may follow a committed
+		// mutation, so only automatically replay methods with idempotent semantics.
+		safeMethod := method == http.MethodGet || method == http.MethodHead ||
+			method == http.MethodOptions || method == http.MethodPut || method == http.MethodDelete
+		replayable := req.Body == nil || req.Body == http.NoBody || req.GetBody != nil
+		if !retryableStatus || !replayable || (!safeMethod && resp.StatusCode != http.StatusTooManyRequests) {
+			resp.Body.(*responseBody).cancel = cancel
+			returned = true
+			return resp, nil
+		}
+		resp.Body.Close()
+		if attempt >= maxRetries {
+			return nil, fmt.Errorf("request failed after retries: %s", resp.Status)
+		}
+		slog.Warn("graph request retry", "status", resp.Status, "attempt", attempt+1, "delay", delay, "url", url)
+		if !sharedDelay {
+			if err := waitRetry(ctx, delay); err != nil {
+				return nil, err
+			}
+		}
+		// Shared delays are enforced in do, including any later extension.
 	}
 }
 
 func parseRetryAfter(val string) (time.Duration, bool) {
+	val = strings.TrimSpace(val)
 	if val == "" {
 		return 0, false
 	}
-	if secs, err := strconv.Atoi(val); err == nil {
+	// Parse unsigned decimal seconds without allowing a sign or duration overflow.
+	numeric := true
+	for _, ch := range val {
+		if ch < '0' || ch > '9' {
+			numeric = false
+			break
+		}
+	}
+	const maxDuration = time.Duration(1<<63 - 1)
+	if numeric {
+		secs, err := strconv.ParseUint(val, 10, 64)
+		if err != nil || secs > uint64(maxDuration/time.Second) {
+			return 0, false
+		}
 		return time.Duration(secs) * time.Second, true
 	}
 	if t, err := http.ParseTime(val); err == nil {
-		d := time.Until(t)
+		now := time.Now()
+		if t.After(now.Add(maxDuration)) {
+			return 0, false
+		}
+		d := t.Sub(now)
 		if d < 0 {
 			d = 0
 		}
@@ -359,8 +491,9 @@ func (c *Client) findChildFolder(ctx context.Context, parentID, name string) (st
 		if err != nil {
 			return "", err
 		}
-		defer resp.Body.Close()
+		// Close each page before requesting another: permits cover open bodies.
 		if resp.StatusCode >= 300 {
+			resp.Body.Close()
 			return "", fmt.Errorf("list folders failed: %s", resp.Status)
 		}
 		var lr struct {
@@ -371,8 +504,10 @@ func (c *Client) findChildFolder(ctx context.Context, parentID, name string) (st
 			NextLink string `json:"@odata.nextLink"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&lr); err != nil {
+			resp.Body.Close()
 			return "", err
 		}
+		resp.Body.Close()
 		for _, f := range lr.Value {
 			if f.DisplayName == name {
 				return f.ID, nil
