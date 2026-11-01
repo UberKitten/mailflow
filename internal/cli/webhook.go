@@ -42,6 +42,7 @@ Requires webhook config in config.yaml:
 }
 
 func init() {
+	webhookCmd.Flags().Int("graph-concurrency", 0, "Override Graph request concurrency for this daemon (positive integer)")
 	rootCmd.AddCommand(webhookCmd)
 }
 
@@ -50,6 +51,16 @@ func runWebhook(cmd *cobra.Command, args []string) error {
 	cfg, rules, err := config.Load(cfgDir)
 	if err != nil {
 		return err
+	}
+	if cmd.Flags().Changed("graph-concurrency") {
+		concurrency, err := cmd.Flags().GetInt("graph-concurrency")
+		if err != nil {
+			return err
+		}
+		if concurrency < 1 {
+			return fmt.Errorf("--graph-concurrency must be a positive integer")
+		}
+		cfg.Graph.MaxConcurrentRequests = concurrency
 	}
 
 	if !cfg.Webhook.Enabled {

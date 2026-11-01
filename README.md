@@ -63,6 +63,13 @@ negative, and overflowing values fall back to bounded exponential backoff.
 The configured concurrency limit includes open response bodies, not just
 requests waiting for headers.
 
+For a deployment-managed limit without modifying credential-bearing YAML, run
+`mailflow webhook --graph-concurrency 1`. The optional positive integer overrides
+`graph.max_concurrent_requests` for that daemon's Graph client; omission preserves
+the configured value. Changing this startup option requires a daemon restart,
+not SIGHUP. Compose can set `command: ["webhook", "--graph-concurrency", "1"]`
+while leaving the image entrypoint and configuration mounts unchanged.
+
 Retries require a reproducible request body. A 429 can retry a rejected mutation;
 ambiguous 5xx responses retry only idempotent HTTP methods, not POST or PATCH.
 Transport errors are returned without replay. Callers must close every returned
